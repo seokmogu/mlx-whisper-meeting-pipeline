@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Launch agent that triggers the pipeline whenever macOS Voice Memos writes a new recording.
+
+  Setup:
+    1. Copy to ~/Library/LaunchAgents/com.<yourname>.voicememo-sync.plist
+    2. Replace <USER> with your macOS username, adjust BASE path if needed
+    3. Grant Full Disk Access to /bin/bash in System Settings → Privacy & Security
+       (required so launchd can read the Voice Memos Group Container)
+    4. Load: launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.<yourname>.voicememo-sync.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.voicememo-sync</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/USER/project/meeting-notes/sh/run-pipeline.sh</string>
+    </array>
+
+    <key>WatchPaths</key>
+    <array>
+        <string>/Users/USER/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>120</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/USER/project/meeting-notes/logs/sync.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/USER/project/meeting-notes/logs/sync.error.log</string>
+</dict>
+</plist>

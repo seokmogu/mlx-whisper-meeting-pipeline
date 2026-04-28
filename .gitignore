@@ -1,0 +1,29 @@
+# Secrets
+.env
+
+# Meeting data (private)
+audio/
+transcripts/
+notes/
+glossary/
+notion_exports/
+experiments/diarization/audio/
+experiments/diarization/tmp/
+experiments/diarization/out/
+
+# Whisper models
+models/
+*.bin
+*.gguf
+
+# Python venv
+.venv/
+.venv-diar-test/
+__pycache__/
+*.pyc
+
+# Logs
+logs/
+
+# macOS
+.DS_Store

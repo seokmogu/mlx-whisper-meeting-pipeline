@@ -71,6 +71,7 @@ cp .env.example .env
 #   NOTION_TARGET_PROJECT    — (선택) Notion 전사가 들어갈 프로젝트
 #   NOTION_TOKEN             — (선택) Notion API 토큰
 #   NOTION_MEETING_DBS       — (선택) Notion DB ID 목록
+#   NOTION_UPLOAD_DATABASE_ID — (선택) 생성된 Markdown 노트를 업로드할 Notion DB
 #   NOTION_SPACE_ID          — (선택, build_roster.sh용)
 #   ROSTER_EMAIL_DOMAIN      — (선택, build_roster.sh용)
 #   REMOTE_HOST              — 원격 컴퓨트 호스트 SSH alias
@@ -110,10 +111,22 @@ sqlite3 ~/Library/Application\ Support/Notion/notion.db "SELECT id, name FROM sp
 
 `import-notion-api.sh`/`import-notion.sh`의 선택 인자는 `--since` 날짜. 생략 시 전체 임포트.
 
+## Notion DB 업로드
+
+`NOTION_UPLOAD_DATABASE_ID`가 설정되어 있으면 `run-remote.sh`가 실행 전후의 `notes/<project>/*.md` 목록을 비교해 이번 실행에서 새로 생성된 회의록만 Notion DB에 업로드합니다. 기존 파일은 백필하지 않습니다. 업로드 대상은 `state/notion-upload/pending.txt`에 큐잉되고, 성공하거나 DB에 같은 제목이 이미 있으면 큐에서 제거됩니다. 실패한 항목은 큐에 남아 다음 `run-pipeline.sh` 또는 `run-remote.sh` 실행 때 재시도됩니다. DB ID가 비어 있으면 새 노트를 큐에 넣지 않고 업로드 단계를 건너뜁니다.
+
+업로드는 [`notion-native-toolkit`](https://github.com/seokmogu/notion-native-toolkit) 프로필을 사용합니다.
+
+```bash
+NOTION_NATIVE_PROFILE=                  # blank = notion-native-toolkit default profile
+NOTION_NATIVE_TOOLKIT_DIR=$HOME/project/notion-native-toolkit
+NOTION_UPLOAD_DATABASE_ID=00000000000000000000000000000000
+```
+
 ## 노트 출력 형식
 
 ```
-# 미팅노트
+# {회의 주제 제목}
 ## 요약             (3~5줄)
 ## 주요 논의사항     (주제별)
 ## 결정사항

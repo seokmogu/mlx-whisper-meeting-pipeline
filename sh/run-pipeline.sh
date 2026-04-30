@@ -4,6 +4,7 @@ set -euo pipefail
 BASE="$HOME/project/meeting-notes"
 LOCK="$BASE/logs/pipeline.lock"
 LOG="$BASE/logs/pipeline.log"
+UPLOAD_PENDING="$BASE/state/notion-upload/pending.txt"
 
 mkdir -p "$BASE/logs"
 
@@ -41,11 +42,21 @@ for proj in "${PROJECTS[@]}"; do
 done
 
 if [ "$total_audio" -eq 0 ]; then
+  if [ -n "${NOTION_UPLOAD_DATABASE_ID:-}" ] && [ -s "$UPLOAD_PENDING" ]; then
+    echo "no audio files, retrying pending Notion uploads..."
+    "$BASE/sh/upload-notion-notes.sh" --pending-file "$UPLOAD_PENDING" || \
+      echo "notion upload failed (pending queue retained): $UPLOAD_PENDING"
+  fi
   echo "no audio files in any MEETING_PROJECTS subdir, skip remote run"
   exit 0
 fi
 
 if [ "$unprocessed" -eq 0 ]; then
+  if [ -n "${NOTION_UPLOAD_DATABASE_ID:-}" ] && [ -s "$UPLOAD_PENDING" ]; then
+    echo "all audio already processed, retrying pending Notion uploads..."
+    "$BASE/sh/upload-notion-notes.sh" --pending-file "$UPLOAD_PENDING" || \
+      echo "notion upload failed (pending queue retained): $UPLOAD_PENDING"
+  fi
   echo "all audio already processed, skip remote run"
   exit 0
 fi

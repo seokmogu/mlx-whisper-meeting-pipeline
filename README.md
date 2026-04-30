@@ -1,5 +1,44 @@
 # mlx-whisper-meeting-pipeline
 
+English | [한국어](#핵심-설계)
+
+Distributed meeting-notes pipeline for Korean audio. It syncs macOS Voice Memos or Notion AI transcripts, runs transcription and diarization on a remote Apple Silicon compute host, generates structured Markdown notes with Claude CLI, and can optionally publish newly generated notes back into a Notion database.
+
+## English Overview
+
+The pipeline keeps private meeting artifacts out of git while making the processing code reusable. Each meeting project is a subdirectory under `audio/`, `transcripts/`, and `notes/`, configured by `MEETING_PROJECTS`. Voice Memo titles are routed to projects by prefix through `VOICE_MEMO_ROUTING`; unmatched recordings land in `audio/unsorted/` for manual review.
+
+Processing is designed as an idempotent loop: sync recordings, rsync work state to a remote Mac, transcribe with `mlx-whisper`, split speakers with `pyannote`, generate Markdown with Claude CLI and WebSearch, pull results back, and optionally commit project note repositories. Past notes feed a glossary and roster so future transcripts improve over time.
+
+## Quick Start
+
+```bash
+cp .env.example .env
+# Fill in HF_TOKEN, MEETING_PROJECTS, VOICE_MEMO_ROUTING, REMOTE_HOST.
+
+# On the remote Apple Silicon compute host:
+./sh/setup.sh
+
+# Manual run from the local recording Mac:
+./sh/run-remote.sh
+```
+
+For automatic Voice Memos processing, copy `launchd/com.example.voicememo-sync.plist.example` to `~/Library/LaunchAgents/`, edit the paths, and grant Full Disk Access to `/bin/bash` so it can read the Voice Memos group container.
+
+## Optional Notion Upload
+
+Set `NOTION_UPLOAD_DATABASE_ID` to upload only newly generated Markdown notes to a Notion database. Existing notes are not backfilled by default. Pending uploads are stored in `state/notion-upload/pending.txt`; successful uploads and title matches are removed from the queue, while failures remain for retry.
+
+```bash
+NOTION_NATIVE_PROFILE=                  # blank = notion-native-toolkit default profile
+NOTION_NATIVE_TOOLKIT_DIR=$HOME/project/notion-native-toolkit
+NOTION_UPLOAD_DATABASE_ID=00000000000000000000000000000000
+```
+
+The uploader uses [`notion-native-toolkit`](https://github.com/seokmogu/notion-native-toolkit), maps common database properties such as title/date/participants/type, and updates an existing page when local state already knows its page id. New notes use the first Markdown H1 as the Notion title, so `make-notes.sh` prompts Claude to generate a specific topic title instead of a generic `# 미팅노트`.
+
+---
+
 한국어 회의를 자동으로 정리·축적하는 분산 파이프라인.
 녹음 소스는 macOS Voice Memos 또는 Notion AI 전사, 처리는 별도의 Apple Silicon 컴퓨트 호스트에서 mlx-whisper + pyannote + Claude CLI, 결과는 마크다운 노트로 쌓입니다.
 

@@ -142,13 +142,52 @@ sqlite3 ~/Library/Application\ Support/Notion/notion.db "SELECT id, name FROM sp
 
 | 작업 | 명령어 | 빈도 |
 |---|---|---|
-| Voice Memos 자동 처리 | (launchd 자동) | 녹음 발생 시 |
+| Voice Memos 로컬 dry-run | `./sh/run-local-pipeline.sh --dry-run` | 자동화 설정 전/후 점검 |
+| Voice Memos 로컬 처리 | `./sh/run-local-pipeline.sh` | 수동 트리거 |
+| 기존 회의록 재생성 | `./sh/run-local-pipeline.sh --force-notes --only "worxphere/YYYYMMDD HHMMSS"` | 직원명단/프롬프트 개선 후 재처리 |
+| Voice Memos 자동 처리 | `launchd/com.seokmogu.voicememo-local-pipeline.plist` | 녹음 발생 시/2분 주기 |
 | Notion 전사 임포트 (API) | `./sh/import-notion-api.sh [YYYY-MM-DD]` | 필요 시 |
 | Notion 전사 임포트 (notion.db) | `./sh/import-notion.sh [YYYY-MM-DD]` | 필요 시 (대안 경로) |
 | 전체 파이프라인 수동 실행 | `./sh/run-remote.sh` | 수동 트리거 |
+| 직원명단 roster 갱신 | `./sh/build_employee_roster.sh` | 노트 생성 전 자동, 필요 시 수동 |
 | 멤버 명부 갱신 | `./sh/build_roster.sh` | 월 1회 |
 
 `import-notion-api.sh`/`import-notion.sh`의 선택 인자는 `--since` 날짜. 생략 시 전체 임포트.
+
+### Voice Memos 자동화
+
+로컬 자동화 entrypoint는 `run-local-pipeline.sh`이다. 이 경로는 Voice Memos sync → local transcription → Markdown note → meeting-context-reviewer 산출물까지만 수행한다. Notion 업로드와 Git push는 실행하지 않는다.
+
+```bash
+./sh/run-local-pipeline.sh --dry-run
+./sh/run-local-pipeline.sh
+./sh/run-local-pipeline.sh --force-notes --only "worxphere/20260528 150348"
+```
+
+기존 회의록을 다시 만들 때는 `--force-notes`를 사용한다. 기존 `.md`는 덮어쓰기 전에 `state/note-backups/<project>/<timestamp>/` 아래로 백업된다. `--only`는 `NAME`, `PROJECT/NAME`, `NAME.md`, `PROJECT/NAME.md` 형식을 받는다.
+
+launchd로 켜려면 plist를 사용자 LaunchAgents에 복사한 뒤 로드한다. macOS 권한 정책 때문에 `/bin/bash`에 Full Disk Access가 필요할 수 있다.
+
+```bash
+cp launchd/com.seokmogu.voicememo-local-pipeline.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.seokmogu.voicememo-local-pipeline.plist
+launchctl enable gui/$(id -u)/com.seokmogu.voicememo-local-pipeline
+```
+
+녹음 직후 파일이 아직 쓰이는 중일 수 있어 `sync-voice-memos.sh`는 기본 60초보다 어린 `.m4a` 파일을 건너뛴다. 필요하면 `.env`에서 `VOICE_MEMO_MIN_AGE_SECONDS`로 조정한다.
+
+### 직원명단 기반 이름 정규화
+
+`build_employee_roster.sh`는 Worxphere 포털의 FamilyBab 직원 디렉토리 산출물에서 회의 처리용 roster를 만든다. 기본 입력은 `~/project/worxphere-internal/packages/portal-to-notion/data/familybab/index.md`이며, 로컬에 없으면 `EMPLOYEE_DIRECTORY_REMOTE_HOST`(기본 `macmini`)의 `/Users/agent/project/worxphere-internal/packages/portal-to-notion/data/familybab/index.md`를 읽는다.
+
+출력은 `glossary/employee_roster.tsv`이고, 회의 처리에 필요한 `이름 / 소속팀 / 직책`만 포함한다. 이메일, 전화번호, 사번은 내보내지 않는다.
+
+```bash
+./sh/build_employee_roster.sh --dry-run
+./sh/build_employee_roster.sh
+```
+
+`make-notes.sh`는 이 roster를 Claude 프롬프트에 넣어 인물명과 액션아이템 담당자를 보정한다. `run-local-pipeline.sh`와 `run-remote.sh`는 노트 생성 전에 roster를 먼저 갱신한다.
 
 ## Notion DB 업로드
 
@@ -170,6 +209,7 @@ NOTION_UPLOAD_DATABASE_ID=00000000000000000000000000000000
 ## 주요 논의사항     (주제별)
 ## 결정사항
 ## 액션 아이템       ([ ] 담당자 — 할 일)
+## 참석자/언급 인물  (직원명단으로 확실히 특정되는 경우만)
 ## 기타 메모         (인물·회사·숫자·링크)
 ## 검증 완료         (`원문` → **정정** (출처))
 ## 검증 필요         (웹검색해도 확정 못한 항목)
@@ -184,4 +224,4 @@ NOTION_UPLOAD_DATABASE_ID=00000000000000000000000000000000
 - `run-remote.sh` 각 단계는 idempotent — 이미 생성된 노트/전사는 스킵
 - 화자 분리는 `pyannote/speaker-diarization-community-1`의 exclusive diarization을 사용. `pyannote.audio` 4.x가 필요하므로 `mlx-whisper` venv와 분리된 `.venv-diar-test`에서 실행
 - Claude CLI 호출은 `--dangerously-skip-permissions --tools "WebSearch"` 모드. 대규모 배치 시 API 비용 주의 (300건 ≈ 3~4시간)
-- `make-notes.sh`는 호출 시점의 환경변수 `CLAUDE_CODE_OAUTH_TOKEN`을 그대로 사용; 환경에 없으면 호스트의 `claude-oauth print-token` 헬퍼로 자체 조달 → launchd 등 비대화형 트리거에서도 작동
+- `make-notes.sh`는 `claude-oauth-run --dangerously-skip-permissions -p --tools WebSearch`로 Claude를 호출해 launchd 등 비대화형 트리거에서도 작동하게 한다.

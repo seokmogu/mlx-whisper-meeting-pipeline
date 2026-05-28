@@ -28,3 +28,6 @@ logs/
 
 # macOS
 .DS_Store
+
+# Agent/runtime local state
+.omc/

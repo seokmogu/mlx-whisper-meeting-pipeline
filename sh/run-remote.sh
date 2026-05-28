@@ -47,12 +47,15 @@ echo "using REMOTE_HOST=$REMOTE_HOST (candidates: $REMOTE_HOSTS)"
 # OAuth 토큰은 원격 호스트의 claude-oauth 프로파일에서 자체 조달한다 (make-notes.sh).
 # 로컬 셸의 토큰을 ssh 너머로 넘기지 않는다 — launchd 등 비대화형 트리거 호환.
 
-echo "[1/7] extracting glossary from past notes..."
+echo "[1/8] refreshing employee roster..."
+"$LOCAL_BASE/sh/build_employee_roster.sh" || echo "employee roster refresh skipped"
+
+echo "[2/8] extracting glossary from past notes..."
 python3 "$LOCAL_BASE/sh/extract_glossary.py" \
   "$LOCAL_BASE/notes" \
   "$LOCAL_BASE/glossary"
 
-echo "[2/7] pushing audio, glossary, transcripts, notes to $REMOTE_HOST..."
+echo "[3/8] pushing audio, glossary, transcripts, notes to $REMOTE_HOST..."
 rsync -av --exclude='.DS_Store' --exclude='unsorted/' \
   "$LOCAL_BASE/audio/" \
   "$REMOTE_HOST:$REMOTE_BASE/audio/"
@@ -68,13 +71,13 @@ rsync -av --exclude='.git/' --exclude='.DS_Store' \
   "$LOCAL_BASE/notes/" \
   "$REMOTE_HOST:$REMOTE_BASE/notes/"
 
-echo "[3/7] running transcribe.sh on $REMOTE_HOST..."
+echo "[4/8] running transcribe.sh on $REMOTE_HOST..."
 ssh "$REMOTE_HOST" "bash $REMOTE_BASE/sh/transcribe.sh"
 
-echo "[4/7] running make-notes.sh on $REMOTE_HOST..."
+echo "[5/8] running make-notes.sh on $REMOTE_HOST..."
 ssh "$REMOTE_HOST" "bash $REMOTE_BASE/sh/make-notes.sh"
 
-echo "[5/7] pulling transcripts and notes back..."
+echo "[6/8] pulling transcripts and notes back..."
 rsync -av --exclude='.git/' \
   "$REMOTE_HOST:$REMOTE_BASE/transcripts/" \
   "$LOCAL_BASE/transcripts/"
@@ -91,7 +94,7 @@ if [ -s "$NOTES_NEW" ] && [ -n "${NOTION_UPLOAD_DATABASE_ID:-}" ]; then
   sort -u "$UPLOAD_PENDING" -o "$UPLOAD_PENDING"
 fi
 
-echo "[6/7] uploading newly generated notes to Notion..."
+echo "[7/8] uploading newly generated notes to Notion..."
 if [ -n "${NOTION_UPLOAD_DATABASE_ID:-}" ] && [ -s "$UPLOAD_PENDING" ]; then
   "$LOCAL_BASE/sh/upload-notion-notes.sh" --pending-file "$UPLOAD_PENDING" || \
     echo "notion upload failed (pending queue retained): $UPLOAD_PENDING"
@@ -101,7 +104,7 @@ else
   echo "no new notes pending for Notion upload"
 fi
 
-echo "[7/7] committing and pushing notes to GitHub..."
+echo "[8/8] committing and pushing notes to GitHub..."
 "$LOCAL_BASE/sh/push-notes.sh" || echo "push-notes failed (non-fatal)"
 
 # 원격 노드는 일회성 실행 노드로만 사용한다. 미팅 데이터는 로컬만 authoritative.

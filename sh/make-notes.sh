@@ -5,23 +5,94 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 TRANSCRIPT_DIR="$BASE/transcripts"
 NOTES_DIR="$BASE/notes"
+FORCE=0
+DRY_RUN=0
+ONLY=""
 
-# Claude 호출은 이 호스트의 활성 프로파일(claude-oauth-run이 사용하는 것)에서 토큰을 조달한다.
-# 이미 환경변수로 들어와 있으면 그것을 쓴다.
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  if command -v claude-oauth >/dev/null 2>&1; then
-    export CLAUDE_CODE_OAUTH_TOKEN="$(claude-oauth print-token)"
+usage() {
+  cat <<'USAGE'
+Usage: make-notes.sh [--force] [--only PROJECT/NAME] [--dry-run]
+
+Generates Markdown meeting notes from transcripts.
+
+Options:
+  --force          Regenerate existing notes. Existing note is backed up first.
+  --only TARGET    Process only NAME, PROJECT/NAME, NAME.txt, or PROJECT/NAME.txt.
+  --dry-run        Report what would happen without calling Claude or writing notes.
+  -h, --help       Show this help.
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --force)
+      FORCE=1
+      ;;
+    --only)
+      ONLY="${2:?--only requires a target}"
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+normalize_target() {
+  local target="$1"
+  target="${target%.txt}"
+  target="${target%.md}"
+  echo "$target"
+}
+
+matches_only() {
+  local proj="$1"
+  local name="$2"
+  [ -z "$ONLY" ] && return 0
+  local target
+  target="$(normalize_target "$ONLY")"
+  [ "$target" = "$name" ] || [ "$target" = "$proj/$name" ]
+}
+
+backup_note() {
+  local proj="$1"
+  local name="$2"
+  local out="$3"
+  local backup_dir="$BASE/state/note-backups/$proj/$(date '+%Y%m%d-%H%M%S')"
+  mkdir -p "$backup_dir"
+  cp -p "$out" "$backup_dir/$name.md"
+  echo "backed up existing note: $backup_dir/$name.md"
+}
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  # Claude 호출은 이 호스트의 활성 프로파일(claude-oauth-run이 사용하는 것)에서 토큰을 조달한다.
+  # 이미 환경변수로 들어와 있으면 그것을 쓴다.
+  if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    if command -v claude-oauth >/dev/null 2>&1; then
+      export CLAUDE_CODE_OAUTH_TOKEN="$(claude-oauth print-token)"
+    fi
   fi
-fi
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  echo "CLAUDE_CODE_OAUTH_TOKEN not set — 이 호스트의 claude-oauth 프로파일에서 토큰을 가져올 수 없습니다." >&2
-  exit 1
+  if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    echo "CLAUDE_CODE_OAUTH_TOKEN not set — 이 호스트의 claude-oauth 프로파일에서 토큰을 가져올 수 없습니다." >&2
+    exit 1
+  fi
 fi
 
 read -r -a PROJECTS <<<"${MEETING_PROJECTS:-worxphere}"
 
 made=0
 skipped=0
+overwritten=0
 
 shopt -s nullglob
 for proj in "${PROJECTS[@]}"; do
@@ -32,11 +103,30 @@ for proj in "${PROJECTS[@]}"; do
 
   for transcript in "$in_dir"/*.txt; do
     name="$(basename "$transcript" .txt)"
+    if ! matches_only "$proj" "$name"; then
+      continue
+    fi
     out="$out_dir/$name.md"
 
-    if [ -f "$out" ]; then
+    if [ -f "$out" ] && [ "$FORCE" -eq 0 ]; then
       skipped=$((skipped + 1))
       continue
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+      if [ -f "$out" ] && [ "$FORCE" -eq 1 ]; then
+        echo "dry-run overwrite: $proj/$name"
+        overwritten=$((overwritten + 1))
+      else
+        echo "dry-run make notes: $proj/$name"
+        made=$((made + 1))
+      fi
+      continue
+    fi
+
+    if [ -f "$out" ] && [ "$FORCE" -eq 1 ]; then
+      backup_note "$proj" "$name" "$out"
+      overwritten=$((overwritten + 1))
     fi
 
     echo "making notes: $proj/$name"
@@ -79,6 +169,10 @@ for proj in "${PROJECTS[@]}"; do
 ## 액션 아이템
 - [ ] 담당자(파악 가능 시) — 할 일
 
+## 참석자/언급 인물
+- 직원명단과 대화 맥락으로 확실히 특정되는 인물만 `이름(소속팀, 직책)` 형식으로 기록
+- 동명이인/불확실한 호칭은 원문 유지
+
 ## 기타 메모
 - 언급된 인물, 회사, 숫자, 링크 등 사실 정보
 
@@ -88,7 +182,22 @@ for proj in "${PROJECTS[@]}"; do
 ## 검증 필요
 - 웹검색해도 확정 못한 전사 오류 의심 항목 (해당 시에만)
 PROMPT
-      if [ -s "$BASE/glossary/roster.tsv" ]; then
+      if [ -s "$BASE/glossary/employee_roster.tsv" ]; then
+        cat <<'ROSTER'
+
+---
+**이름 정규화 — 직원 디렉토리**
+형식: `이름<TAB>소속팀<TAB>직책`. 전사의 "~님" 호칭, 짧은 이름, 유사 발음을 이 명부와 매칭해 인물을 특정한다.
+- 이름이 명부에서 1명으로 확정되고 문맥이 맞을 때만 `이름(소속팀, 직책)`으로 정규화
+- 동명이인이거나 소속/역할 문맥이 맞지 않으면 원문을 유지하고 `## 검증 필요`에 남김
+- 액션 아이템 담당자는 명시 발화가 있을 때만 직원명으로 작성. 회의 흐름상 추정되는 사람은 담당자로 만들지 않음
+- 이메일, 전화번호, 사번은 출력하지 않음
+- 정정 시 `## 검증 완료`에 `"민수님" → **김민수(Product팀, PO)**` 형식으로 기록
+
+직원 디렉토리:
+ROSTER
+        cat "$BASE/glossary/employee_roster.tsv"
+      elif [ -s "$BASE/glossary/roster.tsv" ]; then
         cat <<'ROSTER'
 
 ---
@@ -110,9 +219,8 @@ ROSTER
 TAIL
       cat "$transcript"
     } | env -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY -u CLAUDE_API_KEY \
-        "$HOME/.local/bin/claude" -p \
+        "$HOME/.local/bin/claude-oauth-run" --dangerously-skip-permissions -p \
         --tools "WebSearch" \
-        --dangerously-skip-permissions \
         > "$out"
 
     made=$((made + 1))
@@ -120,5 +228,6 @@ TAIL
 done
 
 echo "---"
-echo "made: $made, skipped (already exists): $skipped"
-echo "destination: $NOTES_DIR/{${MEETING_PROJECTS// /,}}"
+echo "made: $made, overwritten: $overwritten, skipped (already exists): $skipped"
+projects_csv="$(IFS=,; echo "${PROJECTS[*]}")"
+echo "destination: $NOTES_DIR/{$projects_csv}"

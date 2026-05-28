@@ -15,6 +15,37 @@ BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 SRC="$HOME/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"
 DB="$SRC/CloudRecordings.db"
 DST_BASE="$BASE/audio"
+DRY_RUN=0
+
+usage() {
+  cat <<'USAGE'
+Usage: sync-voice-memos.sh [--dry-run]
+
+Copies completed macOS Voice Memos recordings into project audio folders.
+
+Options:
+  --dry-run   Report copy/promote decisions without writing files.
+  -h, --help  Show this help.
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run)
+      DRY_RUN=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
 
 # .env is sourced if available; this script may also be launched directly.
 if [ -f "$BASE/.env" ]; then
@@ -23,9 +54,12 @@ fi
 
 read -r -a PROJECTS <<<"${MEETING_PROJECTS:-worxphere}"
 read -r -a ROUTING_RULES <<<"${VOICE_MEMO_ROUTING:-}"
+VOICE_MEMO_MIN_AGE_SECONDS="${VOICE_MEMO_MIN_AGE_SECONDS:-60}"
 
-mkdir -p "$DST_BASE/unsorted"
-for p in "${PROJECTS[@]}"; do mkdir -p "$DST_BASE/$p"; done
+if [ "$DRY_RUN" -eq 0 ]; then
+  mkdir -p "$DST_BASE/unsorted"
+  for p in "${PROJECTS[@]}"; do mkdir -p "$DST_BASE/$p"; done
+fi
 
 if [ ! -d "$SRC" ]; then
   echo "Voice Memos folder not found: $SRC" >&2
@@ -66,13 +100,27 @@ exists_in_project() {
   return 1
 }
 
+file_mtime_epoch() {
+  local file="$1"
+  stat -f %m "$file" 2>/dev/null || stat -c %Y "$file" 2>/dev/null
+}
+
 copied=0
 skipped=0
+too_new=0
 promoted=0
 unsorted=0
 
 while IFS= read -r -d '' file; do
   name="$(basename "$file")"
+  now="$(date +%s)"
+  mtime="$(file_mtime_epoch "$file" || echo "$now")"
+  age=$((now - mtime))
+  if [ "$age" -lt "$VOICE_MEMO_MIN_AGE_SECONDS" ]; then
+    echo "skip too-new recording: $name (age=${age}s, min=${VOICE_MEMO_MIN_AGE_SECONDS}s)"
+    too_new=$((too_new + 1))
+    continue
+  fi
   if exists_in_project "$name"; then
     skipped=$((skipped + 1))
     continue
@@ -82,25 +130,44 @@ while IFS= read -r -d '' file; do
 
   if [ "$sub" = "unsorted" ]; then
     if [ ! -e "$DST_BASE/unsorted/$name" ]; then
-      cp -p "$file" "$DST_BASE/unsorted/$name"
-      echo "copied: unsorted/$name  (label: ${label:-<none>})"
+      if [ "$DRY_RUN" -eq 1 ]; then
+        echo "dry-run copy: unsorted/$name  (label: ${label:-<none>})"
+      else
+        cp -p "$file" "$DST_BASE/unsorted/$name"
+        echo "copied: unsorted/$name  (label: ${label:-<none>})"
+      fi
       copied=$((copied + 1))
       unsorted=$((unsorted + 1))
     fi
     # Already in unsorted: leave it; we'll re-check the label next cycle.
   elif [ -e "$DST_BASE/unsorted/$name" ]; then
-    mv "$DST_BASE/unsorted/$name" "$DST_BASE/$sub/$name"
-    echo "promoted: unsorted/$name → $sub/$name  (label: $label)"
+    if [ "$DRY_RUN" -eq 1 ]; then
+      echo "dry-run promote: unsorted/$name → $sub/$name  (label: $label)"
+    else
+      mv "$DST_BASE/unsorted/$name" "$DST_BASE/$sub/$name"
+      echo "promoted: unsorted/$name → $sub/$name  (label: $label)"
+    fi
     promoted=$((promoted + 1))
   else
-    cp -p "$file" "$DST_BASE/$sub/$name"
-    echo "copied: $sub/$name  (label: $label)"
+    if [ "$DRY_RUN" -eq 1 ]; then
+      echo "dry-run copy: $sub/$name  (label: $label)"
+    else
+      cp -p "$file" "$DST_BASE/$sub/$name"
+      echo "copied: $sub/$name  (label: $label)"
+    fi
     copied=$((copied + 1))
   fi
 done < <(find "$SRC" -maxdepth 1 -type f -name '*.m4a' -print0)
 
 echo "---"
-echo "copied: $copied (unsorted: $unsorted), promoted: $promoted, skipped (already exists): $skipped"
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo "dry-run: no files copied, moved, or promoted"
+fi
+echo "copied: $copied (unsorted: $unsorted), promoted: $promoted, skipped (already exists): $skipped, too-new: $too_new"
 if [ "$unsorted" -gt 0 ]; then
-  echo "!! $unsorted file(s) landed in audio/unsorted/ — rename the Voice Memo title to match a VOICE_MEMO_ROUTING prefix, or move the file manually." >&2
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "!! $unsorted file(s) would land in audio/unsorted/ — rename the Voice Memo title to match a VOICE_MEMO_ROUTING prefix, or move the file manually." >&2
+  else
+    echo "!! $unsorted file(s) landed in audio/unsorted/ — rename the Voice Memo title to match a VOICE_MEMO_ROUTING prefix, or move the file manually." >&2
+  fi
 fi

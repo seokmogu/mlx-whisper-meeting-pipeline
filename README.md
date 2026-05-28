@@ -166,15 +166,18 @@ sqlite3 ~/Library/Application\ Support/Notion/notion.db "SELECT id, name FROM sp
 
 기존 회의록을 다시 만들 때는 `--force-notes`를 사용한다. 기존 `.md`는 덮어쓰기 전에 `state/note-backups/<project>/<timestamp>/` 아래로 백업된다. `--only`는 `NAME`, `PROJECT/NAME`, `NAME.md`, `PROJECT/NAME.md` 형식을 받는다.
 
-launchd로 켜려면 plist를 사용자 LaunchAgents에 복사한 뒤 로드한다. macOS 권한 정책 때문에 `/bin/bash`에 Full Disk Access가 필요할 수 있다.
+launchd로 켜려면 관리 스크립트를 사용한다. `install`은 현재 Voice Memos 파일을 seen baseline으로 먼저 기록하므로, 자동화 활성화 직후 과거 녹음 전체가 한꺼번에 처리되지 않는다. macOS 권한 정책 때문에 `/bin/bash` 또는 사용하는 터미널 앱에 Full Disk Access가 필요할 수 있다.
 
 ```bash
-cp launchd/com.seokmogu.voicememo-local-pipeline.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.seokmogu.voicememo-local-pipeline.plist
-launchctl enable gui/$(id -u)/com.seokmogu.voicememo-local-pipeline
+./sh/local-launchd.sh install
+./sh/local-launchd.sh status
+./sh/local-launchd.sh kickstart
+./sh/local-launchd.sh uninstall
 ```
 
-녹음 직후 파일이 아직 쓰이는 중일 수 있어 `sync-voice-memos.sh`는 기본 60초보다 어린 `.m4a` 파일을 건너뛴다. 필요하면 `.env`에서 `VOICE_MEMO_MIN_AGE_SECONDS`로 조정한다.
+권한이 부족하면 `logs/local-pipeline.log`에 `Voice Memos folder cannot be listed` 또는 `Operation not permitted`가 남는다. 이 경우 macOS System Settings → Privacy & Security → Full Disk Access에서 `/bin/bash`를 허용한 뒤 `./sh/local-launchd.sh kickstart`로 다시 확인한다.
+
+녹음 직후 파일이 아직 쓰이는 중일 수 있어 `sync-voice-memos.sh`는 기본 60초보다 어린 `.m4a` 파일을 건너뛴다. 필요하면 `.env`에서 `VOICE_MEMO_MIN_AGE_SECONDS`로 조정한다. `VOICE_MEMO_ROUTING`은 제목 prefix 기반이며, 단일 프로젝트 자동 수집으로 쓸 때는 `VOICE_MEMO_DEFAULT_PROJECT=worxphere`를 둘 수 있다.
 
 ### 직원명단 기반 이름 정규화
 

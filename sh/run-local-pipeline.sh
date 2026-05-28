@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 LOCK="$BASE/logs/local-pipeline.lock"
 LOG="$BASE/logs/local-pipeline.log"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 DRY_RUN=0
 FORCE_NOTES=0
 ONLY=""
@@ -83,11 +84,12 @@ REVIEW_PROFILE="${MEETING_REVIEW_PROFILE:-profiles/ax-os}"
 before_notes="$(mktemp)"
 after_notes="$(mktemp)"
 new_notes="$(mktemp)"
+sync_output="$(mktemp)"
 review_targets_temp=""
 if [ "$DRY_RUN" -eq 0 ]; then
-  trap 'rm -f "$LOCK" "$before_notes" "$after_notes" "$new_notes" "$review_targets_temp"' EXIT
+  trap 'rm -f "$LOCK" "$before_notes" "$after_notes" "$new_notes" "$sync_output" "$review_targets_temp"' EXIT
 else
-  trap 'rm -f "$before_notes" "$after_notes" "$new_notes" "$review_targets_temp"' EXIT
+  trap 'rm -f "$before_notes" "$after_notes" "$new_notes" "$sync_output" "$review_targets_temp"' EXIT
 fi
 
 list_notes() {
@@ -128,7 +130,7 @@ list_notes > "$before_notes"
 
 if [ "$DRY_RUN" -eq 1 ]; then
   "$BASE/sh/build_employee_roster.sh" --dry-run || echo "dry-run: employee roster refresh skipped"
-  "$BASE/sh/sync-voice-memos.sh" --dry-run
+  "$BASE/sh/sync-voice-memos.sh" --dry-run | tee "$sync_output"
 else
   "$BASE/sh/build_employee_roster.sh" || echo "employee roster refresh skipped"
   "$BASE/sh/sync-voice-memos.sh"
@@ -157,7 +159,11 @@ if [ "$unprocessed" -eq 0 ] && { [ "$FORCE_NOTES" -eq 0 ] || [ "$matching_transc
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
+  routed_from_sync="$(awk -F'routed: ' '/routed: / {split($2, a, \",\"); value=a[1]} END {print value + 0}' "$sync_output")"
   echo "dry-run: $unprocessed existing audio file(s) would be transcribed and converted into notes"
+  if [ "$routed_from_sync" -gt 0 ]; then
+    echo "dry-run: $routed_from_sync newly synced Voice Memo file(s) would also enter the project audio queue"
+  fi
   if [ "$FORCE_NOTES" -eq 1 ]; then
     echo "dry-run: $matching_transcripts transcript file(s) would be regenerated into notes with backup"
   fi

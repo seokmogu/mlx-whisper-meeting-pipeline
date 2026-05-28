@@ -6,9 +6,10 @@ set -euo pipefail
 # raw timestamp, so we have to query the SQLite DB to get the user-set label.
 #
 # Routing is configured via VOICE_MEMO_ROUTING in .env, e.g.:
-#   VOICE_MEMO_ROUTING="worxphere:worxphere"
-# Means: titles starting with "worxphere" -> audio/worxphere/.
-# Anything that doesn't match a rule lands in audio/unsorted/ for manual sorting.
+#   VOICE_MEMO_ROUTING="worxphere:worxphere 웍스피어:worxphere"
+# Means: titles starting with a prefix -> audio/<project>/.
+# Anything that doesn't match a rule lands in audio/unsorted/ unless
+# VOICE_MEMO_DEFAULT_PROJECT is set.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -16,16 +17,24 @@ SRC="$HOME/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings
 DB="$SRC/CloudRecordings.db"
 DST_BASE="$BASE/audio"
 DRY_RUN=0
+MARK_EXISTING=0
+TMP_FILES=()
+
+cleanup() {
+  [ "${#TMP_FILES[@]}" -eq 0 ] || rm -f "${TMP_FILES[@]}"
+}
+trap cleanup EXIT
 
 usage() {
   cat <<'USAGE'
-Usage: sync-voice-memos.sh [--dry-run]
+Usage: sync-voice-memos.sh [--dry-run] [--mark-existing]
 
 Copies completed macOS Voice Memos recordings into project audio folders.
 
 Options:
-  --dry-run   Report copy/promote decisions without writing files.
-  -h, --help  Show this help.
+  --dry-run        Report copy/promote decisions without writing files.
+  --mark-existing  Record current Voice Memos as already seen, without copying.
+  -h, --help       Show this help.
 USAGE
 }
 
@@ -33,6 +42,9 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run)
       DRY_RUN=1
+      ;;
+    --mark-existing)
+      MARK_EXISTING=1
       ;;
     -h|--help)
       usage
@@ -55,6 +67,9 @@ fi
 read -r -a PROJECTS <<<"${MEETING_PROJECTS:-worxphere}"
 read -r -a ROUTING_RULES <<<"${VOICE_MEMO_ROUTING:-}"
 VOICE_MEMO_MIN_AGE_SECONDS="${VOICE_MEMO_MIN_AGE_SECONDS:-60}"
+VOICE_MEMO_DEFAULT_PROJECT="${VOICE_MEMO_DEFAULT_PROJECT:-}"
+VOICE_MEMO_USE_SEEN_STATE="${VOICE_MEMO_USE_SEEN_STATE:-0}"
+VOICE_MEMO_SEEN_FILE="${VOICE_MEMO_SEEN_FILE:-$BASE/state/voice-memos-seen.txt}"
 
 if [ "$DRY_RUN" -eq 0 ]; then
   mkdir -p "$DST_BASE/unsorted"
@@ -76,16 +91,33 @@ lookup_label() {
   sqlite3 "$DB" "SELECT COALESCE(ZCUSTOMLABELFORSORTING, ZCUSTOMLABEL, '') FROM ZCLOUDRECORDING WHERE ZPATH='$escaped' LIMIT 1;" 2>/dev/null || echo ""
 }
 
+is_project() {
+  local candidate="$1"
+  for project in "${PROJECTS[@]}"; do
+    [ "$candidate" = "$project" ] && return 0
+  done
+  return 1
+}
+
 classify() {
   local label="$1"
+  local label_fold
+  label_fold="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')"
   for rule in "${ROUTING_RULES[@]}"; do
     local prefix="${rule%%:*}"
     local project="${rule#*:}"
+    local prefix_fold
     [ -z "$prefix" ] && continue
-    case "$label" in
-      "$prefix"*) echo "$project"; return ;;
+    is_project "$project" || continue
+    prefix_fold="$(printf '%s' "$prefix" | tr '[:upper:]' '[:lower:]')"
+    case "$label_fold" in
+      "$prefix_fold"*) echo "$project"; return ;;
     esac
   done
+  if [ -n "$VOICE_MEMO_DEFAULT_PROJECT" ] && is_project "$VOICE_MEMO_DEFAULT_PROJECT"; then
+    echo "$VOICE_MEMO_DEFAULT_PROJECT"
+    return
+  fi
   echo "unsorted"
 }
 
@@ -105,14 +137,77 @@ file_mtime_epoch() {
   stat -f %m "$file" 2>/dev/null || stat -c %Y "$file" 2>/dev/null
 }
 
+new_temp_file() {
+  local tmp
+  tmp="$(mktemp)"
+  TMP_FILES+=("$tmp" "$tmp.err")
+  echo "$tmp"
+}
+
+write_recording_list() {
+  local out="$1"
+  if ! find "$SRC" -maxdepth 1 -type f -name '*.m4a' -print0 > "$out" 2>"$out.err"; then
+    cat "$out.err" >&2
+    echo "Voice Memos folder cannot be listed. Grant Full Disk Access to /bin/bash or the launchd runner, then retry." >&2
+    exit 1
+  fi
+  rm -f "$out.err"
+}
+
+seen_enabled() {
+  [ "$VOICE_MEMO_USE_SEEN_STATE" = "1" ] || [ "$VOICE_MEMO_USE_SEEN_STATE" = "true" ] || [ "$VOICE_MEMO_USE_SEEN_STATE" = "yes" ]
+}
+
+seen_contains() {
+  local name="$1"
+  [ -f "$VOICE_MEMO_SEEN_FILE" ] && grep -Fxq "$name" "$VOICE_MEMO_SEEN_FILE"
+}
+
+mark_seen() {
+  local name="$1"
+  [ "$DRY_RUN" -eq 1 ] && return
+  mkdir -p "$(dirname "$VOICE_MEMO_SEEN_FILE")"
+  seen_contains "$name" || printf '%s\n' "$name" >> "$VOICE_MEMO_SEEN_FILE"
+}
+
+if [ "$MARK_EXISTING" -eq 1 ]; then
+  recording_list="$(new_temp_file)"
+  write_recording_list "$recording_list"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    count="$(tr -cd '\0' < "$recording_list" | wc -c | tr -d ' ')"
+    echo "dry-run mark-existing: $count current Voice Memos would be recorded in $VOICE_MEMO_SEEN_FILE"
+    exit 0
+  fi
+  mkdir -p "$(dirname "$VOICE_MEMO_SEEN_FILE")"
+  tmp_seen="$(mktemp)"
+  TMP_FILES+=("$tmp_seen")
+  {
+    [ -f "$VOICE_MEMO_SEEN_FILE" ] && cat "$VOICE_MEMO_SEEN_FILE"
+    while IFS= read -r -d '' file; do
+      basename "$file"
+    done < "$recording_list"
+  } | sort -u > "$tmp_seen"
+  mv "$tmp_seen" "$VOICE_MEMO_SEEN_FILE"
+  count="$(wc -l < "$VOICE_MEMO_SEEN_FILE" | tr -d ' ')"
+  echo "marked existing Voice Memos as seen: $count file(s) -> $VOICE_MEMO_SEEN_FILE"
+  exit 0
+fi
+
 copied=0
 skipped=0
 too_new=0
 promoted=0
 unsorted=0
+routed=0
+recording_list="$(new_temp_file)"
+write_recording_list "$recording_list"
 
 while IFS= read -r -d '' file; do
   name="$(basename "$file")"
+  if seen_enabled && seen_contains "$name"; then
+    skipped=$((skipped + 1))
+    continue
+  fi
   now="$(date +%s)"
   mtime="$(file_mtime_epoch "$file" || echo "$now")"
   age=$((now - mtime))
@@ -123,6 +218,7 @@ while IFS= read -r -d '' file; do
   fi
   if exists_in_project "$name"; then
     skipped=$((skipped + 1))
+    seen_enabled && mark_seen "$name"
     continue
   fi
   label="$(lookup_label "$name")"
@@ -148,6 +244,8 @@ while IFS= read -r -d '' file; do
       echo "promoted: unsorted/$name → $sub/$name  (label: $label)"
     fi
     promoted=$((promoted + 1))
+    routed=$((routed + 1))
+    seen_enabled && mark_seen "$name"
   else
     if [ "$DRY_RUN" -eq 1 ]; then
       echo "dry-run copy: $sub/$name  (label: $label)"
@@ -156,14 +254,16 @@ while IFS= read -r -d '' file; do
       echo "copied: $sub/$name  (label: $label)"
     fi
     copied=$((copied + 1))
+    routed=$((routed + 1))
+    seen_enabled && mark_seen "$name"
   fi
-done < <(find "$SRC" -maxdepth 1 -type f -name '*.m4a' -print0)
+done < "$recording_list"
 
 echo "---"
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "dry-run: no files copied, moved, or promoted"
 fi
-echo "copied: $copied (unsorted: $unsorted), promoted: $promoted, skipped (already exists): $skipped, too-new: $too_new"
+echo "copied: $copied (unsorted: $unsorted), promoted: $promoted, routed: $routed, skipped (already exists/seen): $skipped, too-new: $too_new"
 if [ "$unsorted" -gt 0 ]; then
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "!! $unsorted file(s) would land in audio/unsorted/ — rename the Voice Memo title to match a VOICE_MEMO_ROUTING prefix, or move the file manually." >&2

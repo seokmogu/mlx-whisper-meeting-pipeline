@@ -4,14 +4,15 @@ set -euo pipefail
 # notes/<project> 각각이 독립 git 레포라고 가정 (사용자가 원격을 설정해 둔 경우).
 # 새 노트가 있으면 커밋 후 원격으로 푸시. .env의 MEETING_PROJECTS를 따라 순회.
 
-BASE="${MEETING_BASE_DIR:-$HOME/project/meeting-notes}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 NOTES_DIR="$BASE/notes"
 
 if [ -f "$BASE/.env" ]; then
   set -a; source "$BASE/.env"; set +a
 fi
 
-read -r -a PROJECTS <<<"${MEETING_PROJECTS:-projectA projectB}"
+read -r -a PROJECTS <<<"${MEETING_PROJECTS:-worxphere}"
 
 for proj in "${PROJECTS[@]}"; do
   repo="$NOTES_DIR/$proj"

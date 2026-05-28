@@ -4,7 +4,8 @@
 # Runs from the local (Air) host. Writes to transcripts/ and pushes to the remote.
 set -euo pipefail
 
-BASE="${MEETING_BASE_DIR:-$HOME/project/meeting-notes}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 REMOTE_BASE="project/meeting-notes"
 
 set -a
@@ -13,7 +14,7 @@ set +a
 : "${REMOTE_HOST:=compute-host}"
 : "${NOTION_TOKEN:?NOTION_TOKEN not set in .env}"
 : "${NOTION_MEETING_DBS:?NOTION_MEETING_DBS not set in .env (comma-separated DB IDs)}"
-: "${NOTION_TARGET_PROJECT:=projectA}"
+: "${NOTION_TARGET_PROJECT:=worxphere}"
 # Notion에서 온 전사는 .env의 NOTION_TARGET_PROJECT 서브디렉터리로 분류.
 TRANSCRIPTS_DIR="$BASE/transcripts/$NOTION_TARGET_PROJECT"
 

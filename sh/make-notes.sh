@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-BASE="$HOME/project/meeting-notes"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 TRANSCRIPT_DIR="$BASE/transcripts"
 NOTES_DIR="$BASE/notes"
 
@@ -17,7 +18,7 @@ if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   exit 1
 fi
 
-read -r -a PROJECTS <<<"${MEETING_PROJECTS:-projectA projectB}"
+read -r -a PROJECTS <<<"${MEETING_PROJECTS:-worxphere}"
 
 made=0
 skipped=0

@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-BASE="$HOME/project/meeting-notes"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 LOCK="$BASE/logs/pipeline.lock"
 LOG="$BASE/logs/pipeline.log"
 UPLOAD_PENDING="$BASE/state/notion-upload/pending.txt"
@@ -26,7 +27,7 @@ trap 'rm -f "$LOCK"' EXIT
 if [ -f "$BASE/.env" ]; then
   set -a; source "$BASE/.env"; set +a
 fi
-read -r -a PROJECTS <<<"${MEETING_PROJECTS:-projectA projectB}"
+read -r -a PROJECTS <<<"${MEETING_PROJECTS:-worxphere}"
 
 shopt -s nullglob
 

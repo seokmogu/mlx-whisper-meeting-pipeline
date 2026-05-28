@@ -4,7 +4,8 @@
 # Run periodically (e.g., monthly) — make-notes.sh uses this for name normalization.
 set -euo pipefail
 
-BASE="$HOME/project/meeting-notes"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 GLOSSARY_DIR="$BASE/glossary"
 
 set -a

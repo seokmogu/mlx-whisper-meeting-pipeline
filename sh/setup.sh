@@ -11,12 +11,14 @@
 #   3. Install Claude CLI (for make-notes.sh): https://docs.anthropic.com/claude-code
 set -euo pipefail
 
-BASE="$HOME/project/meeting-notes"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 echo "[1/4] installing system deps via brew..."
 command -v brew >/dev/null || { echo "Homebrew required: https://brew.sh" >&2; exit 1; }
 brew list python@3.11 >/dev/null 2>&1 || brew install python@3.11
 brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+brew list libsndfile >/dev/null 2>&1 || brew install libsndfile
 
 echo "[2/4] creating Python 3.11 venv at $BASE/.venv..."
 mkdir -p "$BASE"
@@ -26,7 +28,18 @@ fi
 
 echo "[3/4] installing WhisperX + deps..."
 "$BASE/.venv/bin/pip" install --upgrade pip
-"$BASE/.venv/bin/pip" install whisperx mlx-whisper demucs
+"$BASE/.venv/bin/pip" install whisperx mlx-whisper demucs soundfile
+
+echo "[3a/4] prefetching Demucs default checkpoint..."
+DEMUX_CACHE="$HOME/.cache/torch/hub/checkpoints"
+DEMUX_CHECKPOINT="$DEMUX_CACHE/955717e8-8726e21a.th"
+DEMUX_URL="https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th"
+mkdir -p "$DEMUX_CACHE"
+if [ ! -s "$DEMUX_CHECKPOINT" ]; then
+  command -v curl >/dev/null || { echo "curl required to prefetch Demucs checkpoint" >&2; exit 1; }
+  curl -L --fail -o "$DEMUX_CHECKPOINT.tmp" "$DEMUX_URL"
+  mv "$DEMUX_CHECKPOINT.tmp" "$DEMUX_CHECKPOINT"
+fi
 
 echo "[3b/4] creating diarization venv for pyannote Community-1..."
 if [ ! -d "$BASE/.venv-diar-test" ]; then

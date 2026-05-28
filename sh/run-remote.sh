@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-LOCAL_BASE="$HOME/project/meeting-notes"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 REMOTE_BASE="project/meeting-notes"
 UPLOAD_STATE_DIR="$LOCAL_BASE/state/notion-upload"
 UPLOAD_PENDING="$UPLOAD_STATE_DIR/pending.txt"
@@ -14,7 +15,7 @@ trap 'rm -f "$NOTES_BEFORE" "$NOTES_AFTER" "$NOTES_NEW"' EXIT
 set -a
 source "$LOCAL_BASE/.env"
 set +a
-read -r -a PROJECTS <<<"${MEETING_PROJECTS:-projectA projectB}"
+read -r -a PROJECTS <<<"${MEETING_PROJECTS:-worxphere}"
 
 mkdir -p "$UPLOAD_STATE_DIR"
 for proj in "${PROJECTS[@]}"; do

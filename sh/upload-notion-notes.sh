@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-BASE="${MEETING_BASE_DIR:-$HOME/project/meeting-notes}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 if [ -f "$BASE/.env" ]; then
   set -a

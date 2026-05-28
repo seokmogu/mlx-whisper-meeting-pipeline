@@ -430,7 +430,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def meeting_projects() -> list[str]:
-    raw = os.getenv("MEETING_PROJECTS", "projectA projectB").strip()
+    raw = os.getenv("MEETING_PROJECTS", "worxphere").strip()
     return [p for p in raw.split() if p]
 
 

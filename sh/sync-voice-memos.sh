@@ -6,11 +6,12 @@ set -euo pipefail
 # raw timestamp, so we have to query the SQLite DB to get the user-set label.
 #
 # Routing is configured via VOICE_MEMO_ROUTING in .env, e.g.:
-#   VOICE_MEMO_ROUTING="alpha:projectA beta:projectB"
-# Means: titles starting with "alpha" → audio/projectA/, etc.
+#   VOICE_MEMO_ROUTING="worxphere:worxphere"
+# Means: titles starting with "worxphere" -> audio/worxphere/.
 # Anything that doesn't match a rule lands in audio/unsorted/ for manual sorting.
 
-BASE="${MEETING_BASE_DIR:-$HOME/project/meeting-notes}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 SRC="$HOME/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"
 DB="$SRC/CloudRecordings.db"
 DST_BASE="$BASE/audio"
@@ -20,7 +21,7 @@ if [ -f "$BASE/.env" ]; then
   set -a; source "$BASE/.env"; set +a
 fi
 
-read -r -a PROJECTS <<<"${MEETING_PROJECTS:-projectA projectB}"
+read -r -a PROJECTS <<<"${MEETING_PROJECTS:-worxphere}"
 read -r -a ROUTING_RULES <<<"${VOICE_MEMO_ROUTING:-}"
 
 mkdir -p "$DST_BASE/unsorted"

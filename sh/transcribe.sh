@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-BASE="$HOME/project/meeting-notes"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 AUDIO_DIR="$BASE/audio"
 TRANSCRIPT_DIR="$BASE/transcripts"
 GLOSSARY_DIR="$BASE/glossary"
@@ -22,6 +23,14 @@ export OMP_NUM_THREADS="$CORES" MKL_NUM_THREADS="$CORES" NUMEXPR_MAX_THREADS="$C
 # Demucs가 PyTorch MPS에서 "Output channels > 65536" 같은 미지원 연산을 만나도 전체 실패하지
 # 않고 해당 op만 CPU로 fallback하도록 허용. 나머지 연산은 MPS GPU에서 실행.
 export PYTORCH_ENABLE_MPS_FALLBACK=1
+# Homebrew Python can miss the system trust store in non-interactive runs. Demucs
+# downloads model weights through urllib/torch.hub, so point it at certifi.
+if [ -z "${SSL_CERT_FILE:-}" ] && [ -x "$VENV/bin/python" ]; then
+  if cert_path="$("$VENV/bin/python" -m certifi 2>/dev/null)"; then
+    export SSL_CERT_FILE="$cert_path"
+    export REQUESTS_CA_BUNDLE="$cert_path"
+  fi
+fi
 
 initial_prompt=""
 if [ -s "$GLOSSARY_DIR/glossary_prompt.txt" ]; then
@@ -44,7 +53,7 @@ if [ ! -x "$DIARIZATION_VENV/bin/python" ]; then
 fi
 
 # 프로젝트 서브디렉터리는 .env의 MEETING_PROJECTS로 정의. `unsorted/`는 자동 전사 안 함.
-read -r -a PROJECTS <<<"${MEETING_PROJECTS:-projectA projectB}"
+read -r -a PROJECTS <<<"${MEETING_PROJECTS:-worxphere}"
 
 transcribed=0
 skipped=0

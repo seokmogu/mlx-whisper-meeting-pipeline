@@ -24,12 +24,12 @@ Environment:
 
   CLAUDE_OAUTH_RUN          claude-oauth-run path override
   CLAUDE_OAUTH_CLI          claude-oauth path override
-  CLAUDE_MODEL              optional Claude Code model/alias passed via --model
+  CLAUDE_MODEL              highest, default, opus, sonnet, or a full Claude model name
   CLAUDE_TOOLS              Claude tools list (default: WebSearch)
   CLAUDE_MAX_BUDGET_USD     optional Claude Code --max-budget-usd value
 
   CODEX_BIN                 codex CLI path override
-  CODEX_MODEL               optional Codex model passed via --model
+  CODEX_MODEL               frontier, default, or a full Codex model name
   CODEX_REASONING_EFFORT    optional Codex reasoning effort (default: medium)
   CODEX_SEARCH              1 to enable Codex web search (default: 1)
   CODEX_SANDBOX             Codex sandbox mode (default: read-only)
@@ -122,6 +122,51 @@ find_executable() {
   return 1
 }
 
+config_value() {
+  local key="$1"
+  local config="${CODEX_HOME:-$HOME/.codex}/config.toml"
+  [ -f "$config" ] || return 0
+  awk -F'"' -v key="$key" '$0 ~ "^[[:space:]]*" key "[[:space:]]*=" {print $2; exit}' "$config"
+}
+
+resolve_claude_model() {
+  local model="${CLAUDE_MODEL-highest}"
+  case "$model" in
+    ""|auto|default|profile)
+      return 0
+      ;;
+    highest|best|frontier)
+      echo "opus"
+      ;;
+    *)
+      echo "$model"
+      ;;
+  esac
+}
+
+resolve_codex_model() {
+  local model="${CODEX_MODEL-frontier}"
+  case "$model" in
+    ""|auto|default|config)
+      return 0
+      ;;
+    highest|best|frontier)
+      local frontier_model
+      frontier_model="${OMX_DEFAULT_FRONTIER_MODEL:-}"
+      if [ -z "$frontier_model" ]; then
+        frontier_model="$(config_value "OMX_DEFAULT_FRONTIER_MODEL")"
+      fi
+      if [ -z "$frontier_model" ]; then
+        frontier_model="$(config_value "model")"
+      fi
+      echo "$frontier_model"
+      ;;
+    *)
+      echo "$model"
+      ;;
+  esac
+}
+
 ensure_claude_oauth() {
   local oauth_cli
   oauth_cli="$(find_executable "${CLAUDE_OAUTH_CLI:-}" "claude-oauth" "$HOME/.local/bin/claude-oauth")"
@@ -142,8 +187,10 @@ run_claude() {
   ensure_claude_oauth
 
   local args=(--dangerously-skip-permissions -p)
-  if [ -n "${CLAUDE_MODEL:-}" ]; then
-    args+=(--model "$CLAUDE_MODEL")
+  local claude_model
+  claude_model="$(resolve_claude_model)"
+  if [ -n "$claude_model" ]; then
+    args+=(--model "$claude_model")
   fi
   local claude_tools="${CLAUDE_TOOLS-WebSearch}"
   if [ -n "$claude_tools" ]; then
@@ -191,8 +238,10 @@ run_codex() {
   if truthy "${CODEX_IGNORE_RULES:-1}"; then
     exec_args+=(--ignore-rules)
   fi
-  if [ -n "${CODEX_MODEL:-}" ]; then
-    exec_args+=(-m "$CODEX_MODEL")
+  local codex_model
+  codex_model="$(resolve_codex_model)"
+  if [ -n "$codex_model" ]; then
+    exec_args+=(-m "$codex_model")
   fi
   exec_args+=(-)
 

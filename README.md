@@ -265,10 +265,10 @@ cp .env.example .env
 | `MEETING_LLM_COMPARE` | `0` | `1`이면 선택 provider 결과와 반대 provider 결과를 `state/llm-comparisons/<project>/<meeting>/`에 저장 |
 | `CLAUDE_OAUTH_RUN` | PATH 또는 `~/.local/bin/claude-oauth-run` | Claude Code OAuth wrapper 경로 override |
 | `CLAUDE_OAUTH_CLI` | PATH 또는 `~/.local/bin/claude-oauth` | OAuth token 조회 CLI 경로 override |
-| `CLAUDE_MODEL` | `sonnet` | Claude Code `--model`. 비워두면 Claude Code 프로파일 기본 모델을 사용 |
+| `CLAUDE_MODEL` | `highest` | `highest`는 Claude Code의 `opus` alias로 해석된다. `default`/빈 값은 Claude Code 프로파일 기본 모델 사용 |
 | `CLAUDE_TOOLS` | `WebSearch` | Claude Code에 허용할 도구 |
 | `CODEX_BIN` | PATH의 `codex` | Codex CLI 경로 override |
-| `CODEX_MODEL` | `gpt-5.5` | Codex `--model`. 비워두면 `~/.codex/config.toml` 기본값 사용 |
+| `CODEX_MODEL` | `frontier` | `frontier`는 실행 시점의 `OMX_DEFAULT_FRONTIER_MODEL`, 없으면 `~/.codex/config.toml`의 `model`로 해석된다 |
 | `CODEX_REASONING_EFFORT` | `medium` | 회의록 생성용 Codex reasoning effort |
 | `CODEX_SEARCH` | `1` | Codex web search 활성화 여부 |
 | `CODEX_SANDBOX` | `read-only` | Codex가 실행될 sandbox |
@@ -277,8 +277,8 @@ cp .env.example .env
 현재 이 MacBook에서 확인한 상태는 다음과 같다.
 
 - Claude Code 인증: `claude-oauth print-token`으로 OAuth token을 가져와 `CLAUDE_CODE_OAUTH_TOKEN`으로 주입한다. `ANTHROPIC_*` API key 환경변수는 호출 시 제거해 OAuth 경로를 강제한다.
-- Claude 모델: 공유/재현성을 위해 `.env`에서 `CLAUDE_MODEL=sonnet`을 명시한다. 비워두면 Claude Code 프로파일 기본 모델을 쓴다.
-- Codex 인증/모델: Codex CLI의 로컬 설정을 사용한다. 현재 `~/.codex/config.toml`의 기본 모델은 `gpt-5.5`이며, `.env`의 `CODEX_MODEL`로 고정할 수 있다.
+- Claude 모델: 공유/재현성을 위해 `.env`에서 `CLAUDE_MODEL=highest`를 사용한다. 스크립트가 이를 Claude Code의 `opus` alias로 바꿔 넘기므로 Claude 쪽 최신 Opus 라인을 따른다. 더 낮은 비용/속도가 필요하면 `sonnet`, 도구 기본값을 쓰려면 `default`로 바꾼다.
+- Codex 인증/모델: `.env`에서 `CODEX_MODEL=frontier`를 사용한다. 스크립트가 실행 시점의 `OMX_DEFAULT_FRONTIER_MODEL` 또는 `~/.codex/config.toml` 기본 모델을 읽어 넘긴다.
 
 단일 provider 실행:
 
@@ -316,7 +316,7 @@ command -v codex
 codex --version
 printf 'OK만 출력해' | codex --ask-for-approval never --sandbox read-only \
   exec --ephemeral --ignore-rules --skip-git-repo-check \
-  -C "$PWD" --color never -m gpt-5.5 -
+  -C "$PWD" --color never -
 ```
 
 성공 기준은 실행 파일 경로와 version이 출력되고, 마지막 명령이 `OK`를 출력하는 것이다. `run-note-llm.sh`는 Codex 호출 시 `--output-last-message`를 사용해 Codex 실행 로그가 회의록 파일에 섞이지 않게 한다.

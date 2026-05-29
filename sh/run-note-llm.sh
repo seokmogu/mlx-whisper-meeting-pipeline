@@ -25,12 +25,13 @@ Environment:
   CLAUDE_OAUTH_RUN          claude-oauth-run path override
   CLAUDE_OAUTH_CLI          claude-oauth path override
   CLAUDE_MODEL              highest, default, opus, sonnet, or a full Claude model name
+  CLAUDE_EFFORT             highest, default, low, medium, high, xhigh, or max
   CLAUDE_TOOLS              Claude tools list (default: WebSearch)
   CLAUDE_MAX_BUDGET_USD     optional Claude Code --max-budget-usd value
 
   CODEX_BIN                 codex CLI path override
   CODEX_MODEL               frontier, default, or a full Codex model name
-  CODEX_REASONING_EFFORT    optional Codex reasoning effort (default: medium)
+  CODEX_REASONING_EFFORT    highest, default, low, medium, high, or xhigh
   CODEX_SEARCH              1 to enable Codex web search (default: 1)
   CODEX_SANDBOX             Codex sandbox mode (default: read-only)
   CODEX_APPROVAL_POLICY     Codex approval policy (default: never)
@@ -167,6 +168,36 @@ resolve_codex_model() {
   esac
 }
 
+resolve_claude_effort() {
+  local effort="${CLAUDE_EFFORT-highest}"
+  case "$effort" in
+    ""|auto|default|profile)
+      return 0
+      ;;
+    highest|best|max)
+      echo "max"
+      ;;
+    *)
+      echo "$effort"
+      ;;
+  esac
+}
+
+resolve_codex_effort() {
+  local effort="${CODEX_REASONING_EFFORT-highest}"
+  case "$effort" in
+    ""|auto|default|config)
+      return 0
+      ;;
+    highest|best|max)
+      echo "xhigh"
+      ;;
+    *)
+      echo "$effort"
+      ;;
+  esac
+}
+
 ensure_claude_oauth() {
   local oauth_cli
   oauth_cli="$(find_executable "${CLAUDE_OAUTH_CLI:-}" "claude-oauth" "$HOME/.local/bin/claude-oauth")"
@@ -191,6 +222,11 @@ run_claude() {
   claude_model="$(resolve_claude_model)"
   if [ -n "$claude_model" ]; then
     args+=(--model "$claude_model")
+  fi
+  local claude_effort
+  claude_effort="$(resolve_claude_effort)"
+  if [ -n "$claude_effort" ]; then
+    args+=(--effort "$claude_effort")
   fi
   local claude_tools="${CLAUDE_TOOLS-WebSearch}"
   if [ -n "$claude_tools" ]; then
@@ -223,8 +259,10 @@ run_codex() {
   if truthy "${CODEX_SEARCH:-1}"; then
     top_args+=(--search)
   fi
-  if [ -n "${CODEX_REASONING_EFFORT:-medium}" ]; then
-    top_args+=(-c "model_reasoning_effort=\"${CODEX_REASONING_EFFORT:-medium}\"")
+  local codex_effort
+  codex_effort="$(resolve_codex_effort)"
+  if [ -n "$codex_effort" ]; then
+    top_args+=(-c "model_reasoning_effort=\"$codex_effort\"")
   fi
 
   local exec_args=(
@@ -258,10 +296,41 @@ run_provider() {
   local provider="$1"
   local prompt_file="$2"
   local output_file="$3"
+  local provider_prompt
+  provider_prompt="$(mktemp)"
+  local search_available="no"
   case "$provider" in
-    claude) run_claude "$prompt_file" "$output_file" ;;
-    codex) run_codex "$prompt_file" "$output_file" ;;
+    claude)
+      local claude_tools="${CLAUDE_TOOLS-WebSearch}"
+      case " $claude_tools " in
+        *WebSearch*|*websearch*) search_available="yes" ;;
+      esac
+      ;;
+    codex)
+      if truthy "${CODEX_SEARCH:-1}"; then
+        search_available="yes"
+      fi
+      ;;
   esac
+  {
+    cat <<CONTEXT
+런타임 LLM provider context:
+- provider: $provider
+- web search available: $search_available
+- web search available이 no이면 검색을 수행한 것처럼 쓰지 마세요. "웹검색 결과", "검색 결과", "공개 자료 확인", "web_search 결과" 같은 표현을 금지합니다.
+- web search available이 yes여도 실제 도구 호출 없이 외부 검증을 했다고 쓰지 마세요.
+
+CONTEXT
+    cat "$prompt_file"
+  } > "$provider_prompt"
+
+  case "$provider" in
+    claude) run_claude "$provider_prompt" "$output_file" ;;
+    codex) run_codex "$provider_prompt" "$output_file" ;;
+  esac
+  local status=$?
+  rm -f "$provider_prompt"
+  return "$status"
 }
 
 other_provider() {

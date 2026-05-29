@@ -20,6 +20,12 @@ class AudioItem:
     duration: float | None
 
 
+@dataclass(frozen=True)
+class SpeechWindow:
+    start: float
+    end: float
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare local audio queue before transcription.")
     parser.add_argument("--dry-run", action="store_true")
@@ -31,9 +37,15 @@ def main() -> int:
     min_duration = float(os.environ.get("AUDIO_PREP_MIN_DURATION_SECONDS", "10"))
     silence_ratio = float(os.environ.get("AUDIO_PREP_REJECT_SILENCE_RATIO", "0.98"))
     silence_threshold = os.environ.get("AUDIO_PREP_SILENCE_THRESHOLD", "-35dB")
+    trim_enabled = _truthy(os.environ.get("AUDIO_PREP_TRIM_OUTER_SILENCE", "1"))
+    trim_threshold = os.environ.get("AUDIO_PREP_TRIM_THRESHOLD", silence_threshold)
+    trim_silence_duration = float(os.environ.get("AUDIO_PREP_TRIM_SILENCE_DURATION", "0.5"))
+    trim_padding = float(os.environ.get("AUDIO_PREP_TRIM_PADDING_SECONDS", "0.4"))
+    min_trim = float(os.environ.get("AUDIO_PREP_MIN_TRIM_SECONDS", "1.0"))
 
     merged = 0
     rejected = 0
+    trimmed = 0
 
     for project in projects:
         audio_dir = base / "audio" / project
@@ -48,12 +60,25 @@ def main() -> int:
 
         kept: list[AudioItem] = []
         for item in candidates:
-            reason = _reject_reason(item, silence_threshold, min_duration, silence_ratio)
+            prepared = item
+            if trim_enabled:
+                prepared, did_trim = _trim_outer_silence(
+                    base,
+                    item,
+                    trim_threshold,
+                    trim_silence_duration,
+                    trim_padding,
+                    min_trim,
+                    dry_run=args.dry_run,
+                )
+                if did_trim:
+                    trimmed += 1
+            reason = _reject_reason(prepared, silence_threshold, min_duration, silence_ratio)
             if reason:
-                _reject_audio(base, item, reason, dry_run=args.dry_run)
+                _reject_audio(base, prepared, reason, dry_run=args.dry_run)
                 rejected += 1
             else:
-                kept.append(item)
+                kept.append(prepared)
 
         for group in _adjacent_groups(kept, merge_gap):
             if len(group) < 2:
@@ -63,8 +88,8 @@ def main() -> int:
 
     print("---")
     if args.dry_run:
-        print("dry-run: no audio prepared, moved, rejected, or merged")
-    print(f"audio prepared: merged_groups={merged}, rejected={rejected}")
+        print("dry-run: no audio prepared, moved, rejected, trimmed, or merged")
+    print(f"audio prepared: merged_groups={merged}, trimmed={trimmed}, rejected={rejected}")
     return 0
 
 
@@ -134,6 +159,151 @@ def _silence_seconds(path: Path, threshold: str) -> float | None:
     if result.returncode != 0:
         return None
     return sum(float(value) for value in re.findall(r"silence_duration: ([0-9.]+)", result.stderr))
+
+
+def _trim_outer_silence(
+    base: Path,
+    item: AudioItem,
+    threshold: str,
+    silence_duration: float,
+    padding: float,
+    min_trim: float,
+    *,
+    dry_run: bool,
+) -> tuple[AudioItem, bool]:
+    if item.duration is None:
+        return item, False
+    window = _outer_speech_window(item.path, item.duration, threshold, silence_duration, padding)
+    if not window:
+        return item, False
+    trimmed_seconds = window.start + max(0.0, item.duration - window.end)
+    if trimmed_seconds < min_trim:
+        return item, False
+
+    target = _unique_path(base / "state" / "audio-originals" / item.project / item.path.name)
+    if dry_run:
+        print(
+            "dry-run trim outer non-speech: "
+            f"{item.project}/{item.path.name} "
+            f"keep {window.start:.2f}s..{window.end:.2f}s "
+            f"({trimmed_seconds:.2f}s trimmed) -> original backup {target.relative_to(base)}"
+        )
+        adjusted_start = item.started_at + timedelta(seconds=window.start) if item.started_at else item.started_at
+        return (
+            AudioItem(
+                path=item.path,
+                project=item.project,
+                started_at=adjusted_start,
+                duration=window.end - window.start,
+            ),
+            True,
+        )
+
+    temp = item.path.with_suffix(item.path.suffix + ".trim.tmp.m4a")
+    temp.unlink(missing_ok=True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            f"{window.start:.3f}",
+            "-to",
+            f"{window.end:.3f}",
+            "-i",
+            str(item.path),
+            "-vn",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            str(temp),
+        ],
+        check=True,
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(item.path), target)
+    shutil.move(str(temp), item.path)
+    print(
+        "trimmed outer non-speech: "
+        f"{item.project}/{item.path.name} keep {window.start:.2f}s..{window.end:.2f}s "
+        f"({trimmed_seconds:.2f}s trimmed); original -> {target.relative_to(base)}"
+    )
+    adjusted_start = item.started_at + timedelta(seconds=window.start) if item.started_at else item.started_at
+    return (
+        AudioItem(
+            path=item.path,
+            project=item.project,
+            started_at=adjusted_start,
+            duration=_duration_seconds(item.path) or (window.end - window.start),
+        ),
+        True,
+    )
+
+
+def _outer_speech_window(
+    path: Path,
+    duration: float,
+    threshold: str,
+    silence_duration: float,
+    padding: float,
+) -> SpeechWindow | None:
+    events = _silence_events(path, threshold, silence_duration)
+    if not events:
+        return None
+
+    start = 0.0
+    end = duration
+
+    first_start, first_end = events[0]
+    if first_start <= 0.05 and first_end is not None:
+        start = first_end
+
+    last_start, last_end = events[-1]
+    if (last_end is None or last_end >= duration - 0.05) and last_start < duration:
+        end = last_start
+
+    start = max(0.0, start - padding)
+    end = min(duration, end + padding)
+    if end <= start:
+        return None
+    if start <= 0.0 and end >= duration:
+        return None
+    return SpeechWindow(start=start, end=end)
+
+
+def _silence_events(path: Path, threshold: str, silence_duration: float) -> list[tuple[float, float | None]]:
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(path),
+            "-af",
+            f"silencedetect=noise={threshold}:d={silence_duration}",
+            "-f",
+            "null",
+            "-",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+
+    events: list[tuple[float, float | None]] = []
+    for line in result.stderr.splitlines():
+        start_match = re.search(r"silence_start: ([0-9.]+)", line)
+        if start_match:
+            events.append((float(start_match.group(1)), None))
+            continue
+        end_match = re.search(r"silence_end: ([0-9.]+)", line)
+        if end_match and events and events[-1][1] is None:
+            events[-1] = (events[-1][0], float(end_match.group(1)))
+    return events
 
 
 def _reject_audio(base: Path, item: AudioItem, reason: str, *, dry_run: bool) -> None:
@@ -236,6 +406,10 @@ def _unique_path(path: Path) -> Path:
 
 def _ffmpeg_concat_escape(path: Path) -> str:
     return str(path).replace("'", "'\\''")
+
+
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 if __name__ == "__main__":

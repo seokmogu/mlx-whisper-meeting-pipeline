@@ -171,6 +171,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   routed_from_sync="$(awk -F'routed: ' '/routed: / {split($2, a, \",\"); value=a[1]} END {print value + 0}' "$sync_output")"
   imported_manual="$(awk -F'manual imported: ' '/manual imported: / {split($2, a, \",\"); value=a[1]} END {print value + 0}' "$manual_output")"
   merged_groups="$(awk -F'merged_groups=' '/audio prepared: / {split($2, a, \",\"); value=a[1]} END {print value + 0}' "$prepare_output")"
+  trimmed_audio="$(awk -F'trimmed=' '/audio prepared: / {split($2, a, \",\"); value=a[1]} END {print value + 0}' "$prepare_output")"
   rejected_audio="$(awk -F'rejected=' '/audio prepared: / {value=$2} END {print value + 0}' "$prepare_output")"
   echo "dry-run: $unprocessed existing audio file(s) would be transcribed and converted into notes"
   if [ "$routed_from_sync" -gt 0 ]; then
@@ -181,6 +182,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
   fi
   if [ "$merged_groups" -gt 0 ]; then
     echo "dry-run: $merged_groups adjacent restart group(s) would be merged before transcription"
+  fi
+  if [ "$trimmed_audio" -gt 0 ]; then
+    echo "dry-run: $trimmed_audio audio file(s) would have leading/trailing non-speech trimmed"
   fi
   if [ "$rejected_audio" -gt 0 ]; then
     echo "dry-run: $rejected_audio obvious silence/too-short audio file(s) would be quarantined"

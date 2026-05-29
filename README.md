@@ -97,6 +97,7 @@ manual-audio/worxphere/*.m4a
   - import-manual-audio.sh가 audio/worxphere/로 이동
         ▼
 prepare-audio-queue.py
+  - 앞/뒤 무음 또는 저레벨 비발화 구간을 잘라내고 원본은 state/audio-originals/에 보관
   - 중단 후 바로 다시 녹음된 인접 파일은 하나로 merge
   - 너무 짧거나 대부분 무음인 파일은 state/rejected-audio/로 격리
         ▼
@@ -133,6 +134,7 @@ meeting-context-reviewer
 | 원본 Voice Memos | `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/*.m4a` | macOS Voice Memos 앱이 관리 |
 | 처리 대상 오디오 | `audio/<project>/*.m4a` | 현재 기본 project는 `worxphere` |
 | 폰 녹음 수동 import | `manual-audio/worxphere/*.m4a` | 폰에서 복사한 `.m4a`를 넣는 inbox |
+| trim 전 원본 | `state/audio-originals/<project>/` | 앞/뒤 비발화 구간 trim 전 원본 보관 |
 | 중단 후 재녹음 merge 원본 | `state/audio-segments/<project>/` | merge 후 원본 segment 보관 |
 | 잡음/무음 격리 | `state/rejected-audio/<project>/`, `state/rejected-transcripts/<project>/` | 자동 삭제하지 않고 격리 |
 | 전사 결과 | `transcripts/<project>/*.txt` | 화자 분리 반영 |
@@ -153,6 +155,8 @@ tail -80 logs/local-pipeline.log
 정상 상태의 핵심 신호는 `local-launchd.sh status`에서 `watching = 1`, 최신 실행의 `last exit code = 0`, 그리고 dry-run에서 기존 파일이 `skipped (already exists/seen)`로 잡히는 것이다. 폰 녹음은 `manual-audio/worxphere/`에 복사한 뒤 dry-run에서 `manual imported` 수를 확인한다.
 
 ### 중단 후 재녹음과 잡음 처리
+
+전사 전에 `prepare-audio-queue.py`가 각 오디오의 앞/뒤 무음 또는 저레벨 비발화 구간을 감지해 대화가 있는 구간만 남긴다. 내부의 긴 침묵은 회의 흐름일 수 있으므로 제거하지 않는다. trim 전 원본은 `state/audio-originals/<project>/`에 보관한다.
 
 Voice Memos를 중단했다가 바로 다시 녹음하면 macOS는 별도 `.m4a` 파일을 만든다. 로컬 파이프라인은 아직 전사/회의록이 없는 오디오 중 시작 시간이 가깝고 `AUDIO_PREP_MERGE_GAP_SECONDS` 이내로 이어지는 파일을 하나의 `* merged.m4a`로 합친다. 합쳐진 원본 segment는 `state/audio-segments/<project>/`에 보관한다.
 
@@ -270,7 +274,7 @@ launchd로 켜려면 관리 스크립트를 사용한다. `install`은 현재 Vo
 
 폰으로 녹음한 파일을 Mac으로 복사하는 예외 상황에서는 `manual-audio/worxphere/` 아래에 `.m4a` 파일을 넣는다. 다음 로컬 파이프라인 실행 때 `import-manual-audio.sh`가 이 파일을 `audio/worxphere/`로 이동시킨 뒤 기존 전사/회의록 생성 흐름에 태운다.
 
-중단 후 재녹음 merge 기준은 `.env`의 `AUDIO_PREP_MERGE_GAP_SECONDS`로 조정한다. 기본값은 180초다. 잡음/무발화 필터 기준은 `AUDIO_PREP_MIN_DURATION_SECONDS`, `AUDIO_PREP_REJECT_SILENCE_RATIO`, `AUDIO_PREP_SILENCE_THRESHOLD`, `MEETING_MIN_TRANSCRIPT_CHARS`로 조정한다.
+앞/뒤 비발화 trim 기준은 `AUDIO_PREP_TRIM_OUTER_SILENCE`, `AUDIO_PREP_TRIM_THRESHOLD`, `AUDIO_PREP_TRIM_SILENCE_DURATION`, `AUDIO_PREP_TRIM_PADDING_SECONDS`, `AUDIO_PREP_MIN_TRIM_SECONDS`로 조정한다. 중단 후 재녹음 merge 기준은 `.env`의 `AUDIO_PREP_MERGE_GAP_SECONDS`로 조정한다. 기본값은 180초다. 잡음/무발화 필터 기준은 `AUDIO_PREP_MIN_DURATION_SECONDS`, `AUDIO_PREP_REJECT_SILENCE_RATIO`, `AUDIO_PREP_SILENCE_THRESHOLD`, `MEETING_MIN_TRANSCRIPT_CHARS`로 조정한다.
 
 ### 직원명단 기반 이름 정규화
 

@@ -6,7 +6,7 @@ Distributed meeting-notes pipeline for Korean audio. It syncs macOS Voice Memos 
 
 ## English Overview
 
-The pipeline keeps private meeting artifacts out of git while making the processing code reusable. Each meeting project is a subdirectory under `audio/`, `transcripts/`, and `notes/`, configured by `MEETING_PROJECTS`. Voice Memo titles are routed to projects by prefix through `VOICE_MEMO_ROUTING`; unmatched recordings land in `audio/unsorted/` for manual review.
+The pipeline keeps private meeting artifacts out of git while making the processing code reusable. Each meeting project is a subdirectory under `audio/`, `transcripts/`, and `notes/`, configured by `MEETING_PROJECTS`. This MacBook is currently configured as a Worxphere-only recorder: `VOICE_MEMO_FORCE_PROJECT=worxphere` sends every local Voice Memo to `audio/worxphere/` regardless of memo title.
 
 Processing is designed as an idempotent loop: sync recordings, rsync work state to a remote Mac, transcribe with `mlx-whisper`, split speakers with `pyannote`, generate Markdown with Claude CLI and WebSearch, pull results back, and optionally commit project note repositories. Past notes feed a glossary and roster so future transcripts improve over time.
 
@@ -14,7 +14,7 @@ Processing is designed as an idempotent loop: sync recordings, rsync work state 
 
 ```bash
 cp .env.example .env
-# Fill in HF_TOKEN, MEETING_PROJECTS, VOICE_MEMO_ROUTING, REMOTE_HOST.
+# Fill in HF_TOKEN, MEETING_PROJECTS, VOICE_MEMO_FORCE_PROJECT, REMOTE_HOST.
 
 # On the remote Apple Silicon compute host:
 ./sh/setup.sh
@@ -70,6 +70,20 @@ The uploader uses [`notion-native-toolkit`](https://github.com/seokmogu/notion-n
 ```
 
 `<project>`는 `.env`의 `MEETING_PROJECTS`로 정의 (공백 분리). 각 프로젝트는 `audio/`·`transcripts/`·`notes/` 아래 독립 서브디렉터리를 갖고 독립적으로 처리됩니다.
+
+## 상호 프로젝트 디펜던시
+
+이 저장소는 회의록 생산을 소유하지만, 리뷰와 근거 검색은 별도 프로젝트와 느슨하게 연결된다. 아래 의존성은 파일/SQLite 기반 read-only 연결이 기본이며, Notion/GitLab/Slack write는 로컬 자동화 경로에 포함하지 않는다.
+
+| 연결 대상 | 이 저장소가 받는 것 | 이 저장소가 제공하는 것 | 소유 경계 |
+|---|---|---|---|
+| `../meeting-context-reviewer` | `review.md`, `review.json`, `wiki-update-candidates.md` 생성 기능 | `notes/worxphere/*.md`, `glossary/employee_roster.tsv` | 리뷰 판단/스코어링은 reviewer가 소유 |
+| `../worxphere-data-collectors` | Slack/Notion/GitLab SQLite/FTS evidence | 없음 | 내부 데이터 수집과 index freshness는 WDC가 소유 |
+| `../worxphere-internal` 또는 `macmini`의 FamilyBab 산출물 | 직원명단 source markdown | `glossary/employee_roster.tsv` | 직원 디렉토리 수집은 worxphere-internal이 소유, 이 repo는 회의용 최소 TSV만 생성 |
+| `../agentic-services-docs/ax-os` | AX-OS 전략/로드맵/원칙 정본 | 회의록이 전략 리뷰의 입력이 됨 | 전략 source of truth는 ax-os 문서가 소유 |
+| `notion-native-toolkit` | 선택적 Notion writer | 새 회의록 markdown | 로컬 Voice Memos 자동화에서는 사용하지 않음; Notion write는 별도 승인 필요 |
+
+`mlx-whisper-meeting-pipeline`과 `meeting-context-reviewer`는 상호 의존한다. 이 저장소가 회의록과 직원명단을 reviewer에 넘기고, reviewer는 WDC/AX-OS/wiki를 조회해 리뷰 산출물을 만든다. reviewer가 만든 wiki 후보는 자동으로 이 저장소나 Notion에 반영되지 않는다.
 
 ## 현재 운영 플로우
 

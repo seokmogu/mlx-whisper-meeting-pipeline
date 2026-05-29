@@ -168,10 +168,10 @@ if [ "$unprocessed" -eq 0 ] && { [ "$FORCE_NOTES" -eq 0 ] || [ "$matching_transc
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  routed_from_sync="$(awk -F'routed: ' '/routed: / {split($2, a, \",\"); value=a[1]} END {print value + 0}' "$sync_output")"
-  imported_manual="$(awk -F'manual imported: ' '/manual imported: / {split($2, a, \",\"); value=a[1]} END {print value + 0}' "$manual_output")"
-  merged_groups="$(awk -F'merged_groups=' '/audio prepared: / {split($2, a, \",\"); value=a[1]} END {print value + 0}' "$prepare_output")"
-  trimmed_audio="$(awk -F'trimmed=' '/audio prepared: / {split($2, a, \",\"); value=a[1]} END {print value + 0}' "$prepare_output")"
+  routed_from_sync="$(awk -F'routed: ' '/routed: / {split($2, a, ","); value=a[1]} END {print value + 0}' "$sync_output")"
+  imported_manual="$(awk -F'manual imported: ' '/manual imported: / {split($2, a, ","); value=a[1]} END {print value + 0}' "$manual_output")"
+  merged_groups="$(awk -F'merged_groups=' '/audio prepared: / {split($2, a, ","); value=a[1]} END {print value + 0}' "$prepare_output")"
+  trimmed_audio="$(awk -F'trimmed=' '/audio prepared: / {split($2, a, ","); value=a[1]} END {print value + 0}' "$prepare_output")"
   rejected_audio="$(awk -F'rejected=' '/audio prepared: / {value=$2} END {print value + 0}' "$prepare_output")"
   echo "dry-run: $unprocessed existing audio file(s) would be transcribed and converted into notes"
   if [ "$routed_from_sync" -gt 0 ]; then
@@ -210,7 +210,11 @@ fi
 if [ -n "$ONLY" ]; then
   make_notes_args+=(--only "$ONLY")
 fi
-"$BASE/sh/make-notes.sh" "${make_notes_args[@]}"
+if [ "$FORCE_NOTES" -eq 1 ] || [ -n "$ONLY" ]; then
+  "$BASE/sh/make-notes.sh" "${make_notes_args[@]}"
+else
+  "$BASE/sh/make-notes.sh"
+fi
 
 list_notes > "$after_notes"
 comm -13 "$before_notes" "$after_notes" > "$new_notes"

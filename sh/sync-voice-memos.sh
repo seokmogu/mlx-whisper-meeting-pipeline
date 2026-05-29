@@ -1,13 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-# Voice Memos title (ZCUSTOMLABELFORSORTING) → project subdirectory routing.
-# macOS Voice Memos keeps the title in CloudRecordings.db; the m4a file name is a
-# raw timestamp, so we have to query the SQLite DB to get the user-set label.
+# Voice Memos → project subdirectory routing.
 #
-# Routing is configured via VOICE_MEMO_ROUTING in .env, e.g.:
+# If VOICE_MEMO_FORCE_PROJECT is set, every recording from this Mac is routed to
+# that project regardless of the Voice Memos title. Otherwise routing falls back
+# to title prefixes from VOICE_MEMO_ROUTING, e.g.:
 #   VOICE_MEMO_ROUTING="worxphere:worxphere 웍스피어:worxphere"
-# Means: titles starting with a prefix -> audio/<project>/.
 # Anything that doesn't match a rule lands in audio/unsorted/ unless
 # VOICE_MEMO_DEFAULT_PROJECT is set.
 
@@ -67,6 +66,7 @@ fi
 read -r -a PROJECTS <<<"${MEETING_PROJECTS:-worxphere}"
 read -r -a ROUTING_RULES <<<"${VOICE_MEMO_ROUTING:-}"
 VOICE_MEMO_MIN_AGE_SECONDS="${VOICE_MEMO_MIN_AGE_SECONDS:-60}"
+VOICE_MEMO_FORCE_PROJECT="${VOICE_MEMO_FORCE_PROJECT:-}"
 VOICE_MEMO_DEFAULT_PROJECT="${VOICE_MEMO_DEFAULT_PROJECT:-}"
 VOICE_MEMO_USE_SEEN_STATE="${VOICE_MEMO_USE_SEEN_STATE:-0}"
 VOICE_MEMO_SEEN_FILE="${VOICE_MEMO_SEEN_FILE:-$BASE/state/voice-memos-seen.txt}"
@@ -102,6 +102,10 @@ is_project() {
 classify() {
   local label="$1"
   local label_fold
+  if [ -n "$VOICE_MEMO_FORCE_PROJECT" ] && is_project "$VOICE_MEMO_FORCE_PROJECT"; then
+    echo "$VOICE_MEMO_FORCE_PROJECT"
+    return
+  fi
   label_fold="$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')"
   for rule in "${ROUTING_RULES[@]}"; do
     local prefix="${rule%%:*}"
@@ -221,8 +225,13 @@ while IFS= read -r -d '' file; do
     seen_enabled && mark_seen "$name"
     continue
   fi
-  label="$(lookup_label "$name")"
-  sub="$(classify "$label")"
+  if [ -n "$VOICE_MEMO_FORCE_PROJECT" ] && is_project "$VOICE_MEMO_FORCE_PROJECT"; then
+    label="forced:$VOICE_MEMO_FORCE_PROJECT"
+    sub="$VOICE_MEMO_FORCE_PROJECT"
+  else
+    label="$(lookup_label "$name")"
+    sub="$(classify "$label")"
+  fi
 
   if [ "$sub" = "unsorted" ]; then
     if [ ! -e "$DST_BASE/unsorted/$name" ]; then

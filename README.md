@@ -73,7 +73,7 @@ The uploader uses [`notion-native-toolkit`](https://github.com/seokmogu/notion-n
 
 ## 현재 운영 플로우
 
-현재 켜둔 운영 경로는 Voice Memos 기반 로컬 자동화다. 이 경로는 회의록과 리뷰 산출물까지만 만들고, Notion 업로드와 Git push는 하지 않는다.
+현재 켜둔 운영 경로는 Voice Memos 기반 로컬 자동화다. 이 MacBook에서 녹음되는 Voice Memos는 이름과 무관하게 전부 Worxphere 회의로 간주한다. 이 경로는 회의록과 리뷰 산출물까지만 만들고, Notion 업로드와 Git push는 하지 않는다.
 
 ```
 macOS Voice Memos 원본
@@ -87,13 +87,25 @@ macOS Voice Memos 원본
 sync-voice-memos.sh
   - 60초보다 어린 파일은 skip
   - state/voice-memos-seen.txt에 있는 기존 파일은 skip
-  - VOICE_MEMO_ROUTING 또는 VOICE_MEMO_DEFAULT_PROJECT로 project 결정
+  - VOICE_MEMO_FORCE_PROJECT=worxphere이면 제목과 무관하게 worxphere로 복사
         ▼
 audio/worxphere/*.m4a
+        ▲
+        │
+manual-audio/worxphere/*.m4a
+  - 폰으로 녹음해 복사한 예외 파일용 inbox
+  - import-manual-audio.sh가 audio/worxphere/로 이동
+        ▼
+prepare-audio-queue.py
+  - 중단 후 바로 다시 녹음된 인접 파일은 하나로 merge
+  - 너무 짧거나 대부분 무음인 파일은 state/rejected-audio/로 격리
         ▼
 transcribe.sh
   - mlx-whisper: 한국어 전사
   - pyannote: 화자 분리
+        ▼
+filter-low-content-transcripts.py
+  - 전사 결과가 너무 짧으면 잡음/무발화 후보로 보고 격리
         ▼
 transcripts/worxphere/*.txt
         ▼
@@ -120,6 +132,9 @@ meeting-context-reviewer
 |---|---|---|
 | 원본 Voice Memos | `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/*.m4a` | macOS Voice Memos 앱이 관리 |
 | 처리 대상 오디오 | `audio/<project>/*.m4a` | 현재 기본 project는 `worxphere` |
+| 폰 녹음 수동 import | `manual-audio/worxphere/*.m4a` | 폰에서 복사한 `.m4a`를 넣는 inbox |
+| 중단 후 재녹음 merge 원본 | `state/audio-segments/<project>/` | merge 후 원본 segment 보관 |
+| 잡음/무음 격리 | `state/rejected-audio/<project>/`, `state/rejected-transcripts/<project>/` | 자동 삭제하지 않고 격리 |
 | 전사 결과 | `transcripts/<project>/*.txt` | 화자 분리 반영 |
 | 회의록 | `notes/<project>/*.md` | Markdown 산출물 |
 | 리뷰 결과 | `../meeting-context-reviewer/reviews/<meeting-id>/` | reviewer repo의 로컬 산출물 |
@@ -131,10 +146,17 @@ meeting-context-reviewer
 ```bash
 ./sh/local-launchd.sh status
 ./sh/run-local-pipeline.sh --dry-run
+./sh/import-manual-audio.sh --dry-run
 tail -80 logs/local-pipeline.log
 ```
 
-정상 상태의 핵심 신호는 `local-launchd.sh status`에서 `watching = 1`, 최신 실행의 `last exit code = 0`, 그리고 dry-run에서 기존 파일이 `skipped (already exists/seen)`로 잡히는 것이다.
+정상 상태의 핵심 신호는 `local-launchd.sh status`에서 `watching = 1`, 최신 실행의 `last exit code = 0`, 그리고 dry-run에서 기존 파일이 `skipped (already exists/seen)`로 잡히는 것이다. 폰 녹음은 `manual-audio/worxphere/`에 복사한 뒤 dry-run에서 `manual imported` 수를 확인한다.
+
+### 중단 후 재녹음과 잡음 처리
+
+Voice Memos를 중단했다가 바로 다시 녹음하면 macOS는 별도 `.m4a` 파일을 만든다. 로컬 파이프라인은 아직 전사/회의록이 없는 오디오 중 시작 시간이 가깝고 `AUDIO_PREP_MERGE_GAP_SECONDS` 이내로 이어지는 파일을 하나의 `* merged.m4a`로 합친다. 합쳐진 원본 segment는 `state/audio-segments/<project>/`에 보관한다.
+
+마이크를 끄지 못해 무음이나 의미 없는 녹음이 남는 경우에는 두 단계로 걸러낸다. 전사 전에는 너무 짧거나 대부분 무음인 파일을 `state/rejected-audio/<project>/`로 격리한다. 전사 후에는 의미 있는 문자 수가 `MEETING_MIN_TRANSCRIPT_CHARS`보다 적은 transcript를 잡음/무발화 후보로 보고 transcript와 대응 오디오를 `state/rejected-*` 아래로 이동한다. 완전 삭제하지 않으므로 잘못 걸러진 파일은 수동 복구할 수 있다.
 
 ## 피드백 루프
 
@@ -171,7 +193,8 @@ cp .env.example .env
 # .env에 채워야 할 것:
 #   HF_TOKEN                 — pyannote gated 모델 접근용
 #   MEETING_PROJECTS         — 프로젝트 서브디렉터리 (공백 분리)
-#   VOICE_MEMO_ROUTING       — Voice Memos 제목 prefix → project 매핑
+#   VOICE_MEMO_FORCE_PROJECT — 이 MacBook의 Voice Memos를 무조건 보낼 project
+#   MANUAL_AUDIO_DIR         — 폰 녹음 수동 import inbox
 #   NOTION_TARGET_PROJECT    — (선택) Notion 전사가 들어갈 프로젝트
 #   NOTION_TOKEN             — (선택) Notion API 토큰
 #   NOTION_MEETING_DBS       — (선택) Notion DB ID 목록
@@ -206,6 +229,7 @@ sqlite3 ~/Library/Application\ Support/Notion/notion.db "SELECT id, name FROM sp
 | 작업 | 명령어 | 빈도 |
 |---|---|---|
 | Voice Memos 로컬 dry-run | `./sh/run-local-pipeline.sh --dry-run` | 자동화 설정 전/후 점검 |
+| 폰 녹음 수동 import dry-run | `./sh/import-manual-audio.sh --dry-run` | 복사 파일 처리 전 점검 |
 | Voice Memos 로컬 처리 | `./sh/run-local-pipeline.sh` | 수동 트리거 |
 | 기존 회의록 재생성 | `./sh/run-local-pipeline.sh --force-notes --only "worxphere/YYYYMMDD HHMMSS"` | 직원명단/프롬프트 개선 후 재처리 |
 | Voice Memos 자동 처리 설치 | `./sh/local-launchd.sh install` | 최초 1회 |
@@ -242,7 +266,11 @@ launchd로 켜려면 관리 스크립트를 사용한다. `install`은 현재 Vo
 
 권한이 부족하면 `logs/local-pipeline.log`에 `Voice Memos folder cannot be listed` 또는 `Operation not permitted`가 남는다. 이 경우 macOS System Settings → Privacy & Security → Full Disk Access에서 `/bin/bash`와 `/usr/bin/find`를 허용한 뒤 `./sh/local-launchd.sh kickstart`로 다시 확인한다.
 
-녹음 직후 파일이 아직 쓰이는 중일 수 있어 `sync-voice-memos.sh`는 기본 60초보다 어린 `.m4a` 파일을 건너뛴다. 필요하면 `.env`에서 `VOICE_MEMO_MIN_AGE_SECONDS`로 조정한다. `VOICE_MEMO_ROUTING`은 제목 prefix 기반이며, 단일 프로젝트 자동 수집으로 쓸 때는 `VOICE_MEMO_DEFAULT_PROJECT=worxphere`를 둘 수 있다.
+녹음 직후 파일이 아직 쓰이는 중일 수 있어 `sync-voice-memos.sh`는 기본 60초보다 어린 `.m4a` 파일을 건너뛴다. 필요하면 `.env`에서 `VOICE_MEMO_MIN_AGE_SECONDS`로 조정한다. 현재 운영값은 `VOICE_MEMO_FORCE_PROJECT=worxphere`라서 Voice Memos 제목은 라우팅에 영향을 주지 않는다.
+
+폰으로 녹음한 파일을 Mac으로 복사하는 예외 상황에서는 `manual-audio/worxphere/` 아래에 `.m4a` 파일을 넣는다. 다음 로컬 파이프라인 실행 때 `import-manual-audio.sh`가 이 파일을 `audio/worxphere/`로 이동시킨 뒤 기존 전사/회의록 생성 흐름에 태운다.
+
+중단 후 재녹음 merge 기준은 `.env`의 `AUDIO_PREP_MERGE_GAP_SECONDS`로 조정한다. 기본값은 180초다. 잡음/무발화 필터 기준은 `AUDIO_PREP_MIN_DURATION_SECONDS`, `AUDIO_PREP_REJECT_SILENCE_RATIO`, `AUDIO_PREP_SILENCE_THRESHOLD`, `MEETING_MIN_TRANSCRIPT_CHARS`로 조정한다.
 
 ### 직원명단 기반 이름 정규화
 

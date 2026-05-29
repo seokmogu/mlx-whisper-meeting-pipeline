@@ -16,9 +16,12 @@ Usage: run-local-pipeline.sh [--dry-run] [--force-notes] [--only PROJECT/NAME]
 
 Runs the local Voice Memos pipeline:
   1. sync completed Voice Memos into audio/<project>/
-  2. transcribe new audio
-  3. generate Markdown meeting notes
-  4. generate meeting context review artifacts
+  2. import manually copied phone recordings from manual-audio/<project>/
+  3. merge adjacent restart segments and quarantine obvious silence
+  4. transcribe new audio
+  5. quarantine low-content/noise transcripts
+  6. generate Markdown meeting notes
+  7. generate meeting context review artifacts
 
 Options:
   --dry-run   Report what would run without copying, transcribing, writing notes, or generating reviews.
@@ -85,11 +88,13 @@ before_notes="$(mktemp)"
 after_notes="$(mktemp)"
 new_notes="$(mktemp)"
 sync_output="$(mktemp)"
+manual_output="$(mktemp)"
+prepare_output="$(mktemp)"
 review_targets_temp=""
 if [ "$DRY_RUN" -eq 0 ]; then
-  trap 'rm -f "$LOCK" "$before_notes" "$after_notes" "$new_notes" "$sync_output" "$review_targets_temp"' EXIT
+  trap 'rm -f "$LOCK" "$before_notes" "$after_notes" "$new_notes" "$sync_output" "$manual_output" "$prepare_output" "$review_targets_temp"' EXIT
 else
-  trap 'rm -f "$before_notes" "$after_notes" "$new_notes" "$sync_output" "$review_targets_temp"' EXIT
+  trap 'rm -f "$before_notes" "$after_notes" "$new_notes" "$sync_output" "$manual_output" "$prepare_output" "$review_targets_temp"' EXIT
 fi
 
 list_notes() {
@@ -131,9 +136,13 @@ list_notes > "$before_notes"
 if [ "$DRY_RUN" -eq 1 ]; then
   "$BASE/sh/build_employee_roster.sh" --dry-run || echo "dry-run: employee roster refresh skipped"
   "$BASE/sh/sync-voice-memos.sh" --dry-run | tee "$sync_output"
+  "$BASE/sh/import-manual-audio.sh" --dry-run | tee "$manual_output"
+  "$BASE/sh/prepare-audio-queue.py" --dry-run | tee "$prepare_output"
 else
   "$BASE/sh/build_employee_roster.sh" || echo "employee roster refresh skipped"
   "$BASE/sh/sync-voice-memos.sh"
+  "$BASE/sh/import-manual-audio.sh"
+  "$BASE/sh/prepare-audio-queue.py"
 fi
 
 unprocessed=0
@@ -160,9 +169,21 @@ fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   routed_from_sync="$(awk -F'routed: ' '/routed: / {split($2, a, \",\"); value=a[1]} END {print value + 0}' "$sync_output")"
+  imported_manual="$(awk -F'manual imported: ' '/manual imported: / {split($2, a, \",\"); value=a[1]} END {print value + 0}' "$manual_output")"
+  merged_groups="$(awk -F'merged_groups=' '/audio prepared: / {split($2, a, \",\"); value=a[1]} END {print value + 0}' "$prepare_output")"
+  rejected_audio="$(awk -F'rejected=' '/audio prepared: / {value=$2} END {print value + 0}' "$prepare_output")"
   echo "dry-run: $unprocessed existing audio file(s) would be transcribed and converted into notes"
   if [ "$routed_from_sync" -gt 0 ]; then
     echo "dry-run: $routed_from_sync newly synced Voice Memo file(s) would also enter the project audio queue"
+  fi
+  if [ "$imported_manual" -gt 0 ]; then
+    echo "dry-run: $imported_manual manually copied phone recording(s) would also enter the project audio queue"
+  fi
+  if [ "$merged_groups" -gt 0 ]; then
+    echo "dry-run: $merged_groups adjacent restart group(s) would be merged before transcription"
+  fi
+  if [ "$rejected_audio" -gt 0 ]; then
+    echo "dry-run: $rejected_audio obvious silence/too-short audio file(s) would be quarantined"
   fi
   if [ "$FORCE_NOTES" -eq 1 ]; then
     echo "dry-run: $matching_transcripts transcript file(s) would be regenerated into notes with backup"
@@ -175,6 +196,7 @@ fi
 echo "$unprocessed file(s) unprocessed, running local transcription and note generation"
 if [ "$unprocessed" -gt 0 ]; then
   "$BASE/sh/transcribe.sh"
+  "$BASE/sh/filter-low-content-transcripts.py"
 fi
 
 make_notes_args=()

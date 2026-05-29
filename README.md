@@ -2,13 +2,13 @@
 
 English | [한국어](#핵심-설계)
 
-Local-first meeting-notes pipeline for Korean audio. The active production path watches macOS Voice Memos on this MacBook, treats every local recording as a Worxphere meeting, transcribes and diarizes it locally, generates structured Markdown notes with Claude Code, and creates meeting-context-reviewer artifacts. Notion upload and remote compute are optional paths, not part of the current automatic flow.
+Local-first meeting-notes pipeline for Korean audio. The active production path watches macOS Voice Memos on this MacBook, treats every local recording as a Worxphere meeting, transcribes and diarizes it locally, generates structured Markdown notes with a selectable LLM provider, and creates meeting-context-reviewer artifacts. Notion upload and remote compute are optional paths, not part of the current automatic flow.
 
 ## English Overview
 
 The pipeline keeps private meeting artifacts out of git while making the processing code reusable. Each meeting project is a subdirectory under `audio/`, `transcripts/`, and `notes/`, configured by `MEETING_PROJECTS`. This MacBook is currently configured as a Worxphere-only recorder: `VOICE_MEMO_FORCE_PROJECT=worxphere` sends every local Voice Memo to `audio/worxphere/` regardless of memo title.
 
-The active loop is idempotent: sync completed Voice Memos, import manually copied phone recordings, trim/merge/quarantine audio, transcribe with `mlx-whisper`, split speakers with `pyannote`, generate Markdown with `claude-oauth-run` and WebSearch, then run `meeting-context-reviewer`. Past notes and the employee roster feed the next run so transcripts and person matching improve over time.
+The active loop is idempotent: sync completed Voice Memos, import manually copied phone recordings, trim/merge/quarantine audio, transcribe with `mlx-whisper`, split speakers with `pyannote`, generate Markdown with `MEETING_LLM_PROVIDER=claude|codex`, then run `meeting-context-reviewer`. Past notes and the employee roster feed the next run so transcripts and person matching improve over time.
 
 ## Quick Start
 
@@ -40,7 +40,7 @@ NOTION_NATIVE_TOOLKIT_DIR=$HOME/project/notion-native-toolkit
 NOTION_UPLOAD_DATABASE_ID=00000000000000000000000000000000
 ```
 
-The uploader uses [`notion-native-toolkit`](https://github.com/seokmogu/notion-native-toolkit), maps common database properties such as title/date/participants/type, and updates an existing page when local state already knows its page id. New notes use the first Markdown H1 as the Notion title, so `make-notes.sh` prompts Claude to generate a specific topic title instead of a generic `# 미팅노트`.
+The uploader uses [`notion-native-toolkit`](https://github.com/seokmogu/notion-native-toolkit), maps common database properties such as title/date/participants/type, and updates an existing page when local state already knows its page id. New notes use the first Markdown H1 as the Notion title, so `make-notes.sh` prompts the selected LLM to generate a specific topic title instead of a generic `# 미팅노트`.
 
 ---
 
@@ -73,8 +73,8 @@ The uploader uses [`notion-native-toolkit`](https://github.com/seokmogu/notion-n
       │
       ▼
   make-notes.sh
-      - Claude Code가 전사 원문을 읽고 고유명사/인물/액션아이템을 보정
-      - WebSearch + employee_roster.tsv + glossary 사용
+      - 선택된 LLM provider가 전사 원문을 읽고 고유명사/인물/액션아이템을 보정
+      - Claude Code WebSearch 또는 Codex web_search + employee_roster.tsv + glossary 사용
       │
       ▼
   notes/worxphere/*.md
@@ -147,7 +147,8 @@ filter-low-content-transcripts.py
 transcripts/worxphere/*.txt
         ▼
 make-notes.sh
-  - Claude Code + WebSearch
+  - MEETING_LLM_PROVIDER=claude|codex
+  - Claude Code WebSearch 또는 Codex web_search
   - glossary + employee_roster.tsv 주입
   - 원본 transcript 파일을 덮어쓰지 않고, 보정 결과를 notes/<project>/*.md에 반영
         ▼
@@ -207,18 +208,18 @@ Voice Memos를 중단했다가 바로 다시 녹음하면 macOS는 별도 `.m4a`
    과거 노트의 `## 기타 메모`·`## 검증 완료`·`## 검증 필요`에서 고유명사를 뽑아 `glossary_hotwords.txt`·`glossary_prompt.txt` 생성.
    mlx-whisper의 `--initial-prompt`로 주입되어 다음 녹음 전사 시 제품명·팀명·인명 등의 오류율을 낮춤.
 
-2. **WebSearch 워싱** (`make-notes.sh`)
-   Claude Code가 전사 오류로 의심되는 고유명사를 WebSearch로 검증 후 정정 → `## 검증 완료`에 `원문 → 정정 (근거)` 형태로 기록.
+2. **웹검색 워싱** (`make-notes.sh`)
+   선택된 LLM provider가 전사 오류로 의심되는 고유명사를 웹검색 도구로 검증 후 정정 → `## 검증 완료`에 `원문 → 정정 (근거)` 형태로 기록.
 
 3. **이름 정규화** (`build_roster.sh` + make-notes 프롬프트)
    Notion desktop 앱의 로컬 SQLite(`notion.db`)에서 워크스페이스 멤버를 뽑아 `roster.tsv`로 저장.
-   Claude가 "민수님" → `김민수_제품팀` 식으로 풀네임+팀 매칭. 동일 사람의 여러 전사 오류(`철수/철두/철식` 같은 변이)도 한 이름으로 수렴.
+   선택된 LLM provider가 "민수님" → `김민수_제품팀` 식으로 풀네임+팀 매칭. 동일 사람의 여러 전사 오류(`철수/철두/철식` 같은 변이)도 한 이름으로 수렴.
 
 ## 녹음 후 처리 전략
 
 녹음 품질은 후처리로 보완하되, 전사와 화자 분리는 서로 다른 오디오를 사용합니다. 전사에는 Demucs 보컬 분리, EQ, denoise, loudness normalization을 적용한 음성 향상 WAV를 넣어 Whisper 인식률을 높입니다. 반대로 화자 분리에는 원본에 가까운 16k mono WAV를 넣어 speaker embedding이 훼손되지 않게 합니다. 실제 테스트에서 denoise/loudnorm까지 적용한 오디오를 pyannote에 넣으면 두 화자가 92%/8%로 무너졌고, 원본계열 16k mono에서는 31%/69%로 정상 분리되었습니다.
 
-화자 분리는 `pyannote/speaker-diarization-community-1`의 exclusive diarization을 사용합니다. 이 결과를 `mlx-whisper`의 word timestamp에 매칭해 화자가 바뀌는 지점에서 transcript segment를 다시 쪼갭니다. 이후 Claude Code가 roster, glossary, WebSearch를 이용해 이름·고유명사·전사 오류를 보정하고 최종 미팅노트를 생성합니다.
+화자 분리는 `pyannote/speaker-diarization-community-1`의 exclusive diarization을 사용합니다. 이 결과를 `mlx-whisper`의 word timestamp에 매칭해 화자가 바뀌는 지점에서 transcript segment를 다시 쪼갭니다. 이후 선택된 LLM provider가 roster, glossary, 웹검색 도구를 이용해 이름·고유명사·전사 오류를 보정하고 최종 미팅노트를 생성합니다.
 
 ## 설정
 
@@ -243,13 +244,57 @@ cp .env.example .env
 #   NOTION_SPACE_ID          — (선택, build_roster.sh용)
 #   ROSTER_EMAIL_DOMAIN      — (선택, build_roster.sh용)
 #   REMOTE_HOST              — (선택) run-remote.sh를 쓸 때만 필요한 SSH alias
-#   CLAUDE_OAUTH_RUN         — (선택) claude-oauth-run 경로 override
+#   MEETING_LLM_PROVIDER     — claude 또는 codex
+#   MEETING_LLM_COMPARE      — 1이면 Claude/Codex 결과를 둘 다 저장
+#   CLAUDE_MODEL             — (선택) Claude Code --model 값
+#   CODEX_MODEL              — (선택) Codex --model 값
 
 # launchd로 Voice Memos 자동 감지 트리거:
 ./sh/local-launchd.sh install
 ./sh/local-launchd.sh status
 # /bin/bash, /usr/bin/find에 Full Disk Access 권한 부여 필요
 ```
+
+### LLM provider 설정
+
+회의록 생성 LLM은 `sh/run-note-llm.sh`가 담당한다. 기본값은 기존 동작과 같은 `MEETING_LLM_PROVIDER=claude`이며, 공유 가능한 설정은 `.env`에 둔다.
+
+| 변수 | 기본/예시 | 의미 |
+|---|---|---|
+| `MEETING_LLM_PROVIDER` | `claude` | 실제 `notes/<project>/*.md`를 쓰는 provider. `claude` 또는 `codex` |
+| `MEETING_LLM_COMPARE` | `0` | `1`이면 선택 provider 결과와 반대 provider 결과를 `state/llm-comparisons/<project>/<meeting>/`에 저장 |
+| `CLAUDE_OAUTH_RUN` | PATH 또는 `~/.local/bin/claude-oauth-run` | Claude Code OAuth wrapper 경로 override |
+| `CLAUDE_OAUTH_CLI` | PATH 또는 `~/.local/bin/claude-oauth` | OAuth token 조회 CLI 경로 override |
+| `CLAUDE_MODEL` | `sonnet` | Claude Code `--model`. 비워두면 Claude Code 프로파일 기본 모델을 사용 |
+| `CLAUDE_TOOLS` | `WebSearch` | Claude Code에 허용할 도구 |
+| `CODEX_BIN` | PATH의 `codex` | Codex CLI 경로 override |
+| `CODEX_MODEL` | `gpt-5.5` | Codex `--model`. 비워두면 `~/.codex/config.toml` 기본값 사용 |
+| `CODEX_REASONING_EFFORT` | `medium` | 회의록 생성용 Codex reasoning effort |
+| `CODEX_SEARCH` | `1` | Codex web search 활성화 여부 |
+| `CODEX_SANDBOX` | `read-only` | Codex가 실행될 sandbox |
+| `CODEX_APPROVAL_POLICY` | `never` | 비대화형 실행 중 사용자 승인 요청 금지 |
+
+현재 이 MacBook에서 확인한 상태는 다음과 같다.
+
+- Claude Code 인증: `claude-oauth print-token`으로 OAuth token을 가져와 `CLAUDE_CODE_OAUTH_TOKEN`으로 주입한다. `ANTHROPIC_*` API key 환경변수는 호출 시 제거해 OAuth 경로를 강제한다.
+- Claude 모델: 공유/재현성을 위해 `.env`에서 `CLAUDE_MODEL=sonnet`을 명시한다. 비워두면 Claude Code 프로파일 기본 모델을 쓴다.
+- Codex 인증/모델: Codex CLI의 로컬 설정을 사용한다. 현재 `~/.codex/config.toml`의 기본 모델은 `gpt-5.5`이며, `.env`의 `CODEX_MODEL`로 고정할 수 있다.
+
+단일 provider 실행:
+
+```bash
+MEETING_LLM_PROVIDER=claude ./sh/make-notes.sh --force --only "worxphere/20260528 150348"
+MEETING_LLM_PROVIDER=codex ./sh/make-notes.sh --force --only "worxphere/20260528 150348"
+```
+
+Claude/Codex 비교 실행:
+
+```bash
+MEETING_LLM_PROVIDER=claude MEETING_LLM_COMPARE=1 \
+  ./sh/make-notes.sh --force --only "worxphere/20260528 150348"
+```
+
+이 경우 실제 회의록은 선택 provider 결과로 저장되고, 두 provider 결과는 `state/llm-comparisons/worxphere/20260528 150348/claude.md`, `codex.md`에 저장된다. 자동으로 더 나은 결과를 판단하지는 않는다. 품질 판단까지 자동화하려면 별도 judge 단계가 필요하다.
 
 ### Claude Code CLI 확인
 
@@ -264,6 +309,18 @@ printf 'OK만 출력해' | claude-oauth-run --dangerously-skip-permissions -p --
 
 성공 기준은 실행 파일 경로가 출력되고, version이 출력되고, token 길이가 0보다 크고, 마지막 명령이 `OK`를 출력하는 것이다. `make-notes.sh`는 `CLAUDE_OAUTH_RUN`이 설정돼 있으면 그 경로를 쓰고, 없으면 PATH와 `~/.local/bin/claude-oauth-run` 순서로 찾는다.
 
+### Codex CLI 확인
+
+```bash
+command -v codex
+codex --version
+printf 'OK만 출력해' | codex --ask-for-approval never --sandbox read-only \
+  exec --ephemeral --ignore-rules --skip-git-repo-check \
+  -C "$PWD" --color never -m gpt-5.5 -
+```
+
+성공 기준은 실행 파일 경로와 version이 출력되고, 마지막 명령이 `OK`를 출력하는 것이다. `run-note-llm.sh`는 Codex 호출 시 `--output-last-message`를 사용해 Codex 실행 로그가 회의록 파일에 섞이지 않게 한다.
+
 ### 선택 경로: 리모트 컴퓨트 머신
 
 현재 자동 플로우는 로컬 `run-local-pipeline.sh`다. 아래 설정은 `run-remote.sh`로 별도 원격 Apple Silicon Mac에서 처리할 때만 필요하다.
@@ -273,7 +330,7 @@ printf 'OK만 출력해' | claude-oauth-run --dangerously-skip-permissions -p --
 # 별도: HuggingFace에서 pyannote gated 모델 약관을 계정별 1회 수락
 #   https://huggingface.co/pyannote/segmentation-3.0
 #   https://huggingface.co/pyannote/speaker-diarization-community-1
-# 별도: claude-oauth-run / Claude Code 설치 (make-notes.sh용)
+# 별도: 선택한 note LLM CLI 설치 (claude-oauth-run 또는 codex)
 ```
 
 ### Notion 스페이스 ID 확인 (build_roster.sh용)
@@ -304,12 +361,14 @@ sqlite3 ~/Library/Application\ Support/Notion/notion.db "SELECT id, name FROM sp
 
 로컬 자동화 entrypoint는 `run-local-pipeline.sh`이다. 이 경로는 Voice Memos sync → local transcription → Markdown note → meeting-context-reviewer 산출물까지만 수행한다. Notion 업로드와 Git push는 실행하지 않는다.
 
-LLM 전사 보정은 `transcribe.sh`가 아니라 `make-notes.sh`에서 수행한다. `transcribe.sh`는 Whisper/pyannote 결과를 `transcripts/<project>/*.txt`로 남기고, `make-notes.sh`가 그 원본을 읽어 Claude Code, WebSearch, glossary, 직원명단으로 이름·제품명·회사명·액션아이템 담당자를 보정한다. 이 보정 결과는 `notes/<project>/*.md`에 들어가며, 원본 transcript 파일은 감사/재처리를 위해 유지한다.
+LLM 전사 보정은 `transcribe.sh`가 아니라 `make-notes.sh`에서 수행한다. `transcribe.sh`는 Whisper/pyannote 결과를 `transcripts/<project>/*.txt`로 남기고, `make-notes.sh`가 그 원본을 읽어 `sh/run-note-llm.sh`에 넘긴다. 선택된 provider(`MEETING_LLM_PROVIDER=claude|codex`)는 웹검색 도구, glossary, 직원명단으로 이름·제품명·회사명·액션아이템 담당자를 보정한다. 이 보정 결과는 `notes/<project>/*.md`에 들어가며, 원본 transcript 파일은 감사/재처리를 위해 유지한다.
 
 ```bash
 ./sh/run-local-pipeline.sh --dry-run
 ./sh/run-local-pipeline.sh
 ./sh/run-local-pipeline.sh --force-notes --only "worxphere/20260528 150348"
+./sh/make-notes.sh --provider codex --force --only "worxphere/20260528 150348"
+./sh/make-notes.sh --provider claude --compare-llm --force --only "worxphere/20260528 150348"
 ```
 
 기존 회의록을 다시 만들 때는 `--force-notes`를 사용한다. 기존 `.md`는 덮어쓰기 전에 `state/note-backups/<project>/<timestamp>/` 아래로 백업된다. `--only`는 `NAME`, `PROJECT/NAME`, `NAME.md`, `PROJECT/NAME.md` 형식을 받는다.
@@ -342,7 +401,7 @@ launchd로 켜려면 관리 스크립트를 사용한다. `install`은 현재 Vo
 ./sh/build_employee_roster.sh
 ```
 
-`make-notes.sh`는 이 roster를 Claude 프롬프트에 넣어 인물명과 액션아이템 담당자를 보정한다. `run-local-pipeline.sh`와 `run-remote.sh`는 노트 생성 전에 roster를 먼저 갱신한다.
+`make-notes.sh`는 이 roster를 선택 provider 프롬프트에 넣어 인물명과 액션아이템 담당자를 보정한다. `run-local-pipeline.sh`와 `run-remote.sh`는 노트 생성 전에 roster를 먼저 갱신한다.
 
 ## 선택 경로: Notion DB 업로드
 
@@ -380,5 +439,5 @@ NOTION_UPLOAD_DATABASE_ID=00000000000000000000000000000000
 - `notion.db`는 Notion 데스크톱 앱의 로컬 캐시로 내부 구현 디테일. 스키마가 앱 업데이트로 바뀔 수 있음
 - `run-local-pipeline.sh`와 `run-remote.sh` 각 단계는 idempotent — 이미 생성된 노트/전사는 스킵
 - 화자 분리는 `pyannote/speaker-diarization-community-1`의 exclusive diarization을 사용. `pyannote.audio` 4.x가 필요하므로 `mlx-whisper` venv와 분리된 `.venv-diar-test`에서 실행
-- Claude Code 호출은 `--dangerously-skip-permissions --tools "WebSearch"` 모드. 대규모 배치 시 API 비용 주의 (300건 ≈ 3~4시간)
-- `make-notes.sh`는 `claude-oauth-run --dangerously-skip-permissions -p --tools WebSearch`로 Claude를 호출해 launchd 등 비대화형 트리거에서도 작동하게 한다.
+- LLM 호출은 `sh/run-note-llm.sh`가 담당한다. Claude는 `claude-oauth-run --dangerously-skip-permissions -p --tools WebSearch`, Codex는 `codex --ask-for-approval never --sandbox read-only exec ...` 형태로 비대화형 실행한다.
+- 대규모 배치/비교 모드는 API 비용에 주의한다. `MEETING_LLM_COMPARE=1`은 provider를 두 번 호출한다.

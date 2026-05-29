@@ -8,17 +8,22 @@ NOTES_DIR="$BASE/notes"
 FORCE=0
 DRY_RUN=0
 ONLY=""
+LLM_PROVIDER_OVERRIDE=""
+LLM_COMPARE_OVERRIDE=""
 
 usage() {
   cat <<'USAGE'
-Usage: make-notes.sh [--force] [--only PROJECT/NAME] [--dry-run]
+Usage: make-notes.sh [--force] [--only PROJECT/NAME] [--provider claude|codex] [--compare-llm] [--dry-run]
 
 Generates Markdown meeting notes from transcripts.
 
 Options:
   --force          Regenerate existing notes. Existing note is backed up first.
   --only TARGET    Process only NAME, PROJECT/NAME, NAME.txt, or PROJECT/NAME.txt.
-  --dry-run        Report what would happen without calling Claude or writing notes.
+  --provider NAME  Override MEETING_LLM_PROVIDER for this run (claude or codex).
+  --compare-llm    Also run the non-selected provider and save comparison outputs under state/.
+  --no-compare-llm Disable comparison for this run.
+  --dry-run        Report what would happen without calling an LLM or writing notes.
   -h, --help       Show this help.
 USAGE
 }
@@ -31,6 +36,16 @@ while [ "$#" -gt 0 ]; do
     --only)
       ONLY="${2:?--only requires a target}"
       shift
+      ;;
+    --provider)
+      LLM_PROVIDER_OVERRIDE="${2:?--provider requires claude or codex}"
+      shift
+      ;;
+    --compare-llm)
+      LLM_COMPARE_OVERRIDE=1
+      ;;
+    --no-compare-llm)
+      LLM_COMPARE_OVERRIDE=0
       ;;
     --dry-run)
       DRY_RUN=1
@@ -74,30 +89,11 @@ backup_note() {
   echo "backed up existing note: $backup_dir/$name.md"
 }
 
-if [ "$DRY_RUN" -eq 0 ]; then
-  # Claude 호출은 이 호스트의 활성 프로파일(claude-oauth-run이 사용하는 것)에서 토큰을 조달한다.
-  # 이미 환경변수로 들어와 있으면 그것을 쓴다.
-  CLAUDE_OAUTH_RUN="${CLAUDE_OAUTH_RUN:-}"
-  if [ -z "$CLAUDE_OAUTH_RUN" ]; then
-    if command -v claude-oauth-run >/dev/null 2>&1; then
-      CLAUDE_OAUTH_RUN="$(command -v claude-oauth-run)"
-    elif [ -x "$HOME/.local/bin/claude-oauth-run" ]; then
-      CLAUDE_OAUTH_RUN="$HOME/.local/bin/claude-oauth-run"
-    fi
-  fi
-  if [ -z "$CLAUDE_OAUTH_RUN" ]; then
-    echo "claude-oauth-run not found — Claude Code OAuth wrapper를 PATH 또는 CLAUDE_OAUTH_RUN에 설정하세요." >&2
-    exit 1
-  fi
-  if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-    if command -v claude-oauth >/dev/null 2>&1; then
-      export CLAUDE_CODE_OAUTH_TOKEN="$(claude-oauth print-token)"
-    fi
-  fi
-  if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-    echo "CLAUDE_CODE_OAUTH_TOKEN not set — 이 호스트의 claude-oauth 프로파일에서 토큰을 가져올 수 없습니다." >&2
-    exit 1
-  fi
+if [ -n "$LLM_PROVIDER_OVERRIDE" ]; then
+  export MEETING_LLM_PROVIDER="$LLM_PROVIDER_OVERRIDE"
+fi
+if [ -n "$LLM_COMPARE_OVERRIDE" ]; then
+  export MEETING_LLM_COMPARE="$LLM_COMPARE_OVERRIDE"
 fi
 
 read -r -a PROJECTS <<<"${MEETING_PROJECTS:-worxphere}"
@@ -158,7 +154,7 @@ for proj in "${PROJECTS[@]}"; do
 - 제목은 날짜/시간 없이 15~45자 정도로, DB나 파일 목록에서 구분 가능하게 핵심 주제 1~2개를 포함
 - 없는 정보는 추측하지 말고 해당 섹션 생략
 - 형식 A인 경우에만 화자(A/B)의 역할을 대화 맥락에서 추론해 표기 (예: "A(대표)", "B(컨설턴트)"). 확신이 없으면 A/B 그대로 사용. 형식 B는 화자 관련 표기 생략
-- **고유명사 워싱 (WebSearch 활용)**: 회사명·인명·제품명·약어 중 전사 오류로 의심되는 항목은 반드시 WebSearch 도구로 검증 후 정정:
+- **고유명사 워싱 (웹검색 도구 활용)**: 회사명·인명·제품명·약어 중 전사 오류로 의심되는 항목은 사용 가능한 웹검색 도구(Claude Code WebSearch 또는 Codex web_search)로 검증 후 정정:
   1. 문맥(업종·규모·기능 등)에서 검색 쿼리를 설계해 실존 여부 확인
   2. 검증된 정정본으로 본문을 대체하고, 원문-정정본 쌍을 `## 검증 완료` 섹션에 기록
   3. 검색해도 확정 못한 항목만 `## 검증 필요` 섹션에 `원문 → 추정 (근거)` 형식으로 남김
@@ -230,10 +226,10 @@ ROSTER
 녹취록:
 TAIL
       cat "$transcript"
-    } | env -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY -u CLAUDE_API_KEY \
-        "$CLAUDE_OAUTH_RUN" --dangerously-skip-permissions -p \
-        --tools "WebSearch" \
-        > "$out"
+    } | "$BASE/sh/run-note-llm.sh" \
+        --out "$out" \
+        --project "$proj" \
+        --name "$name"
 
     made=$((made + 1))
   done

@@ -8,7 +8,7 @@
 #      - https://huggingface.co/pyannote/segmentation-3.0
 #      - https://huggingface.co/pyannote/speaker-diarization-3.1
 #      - https://huggingface.co/pyannote/speaker-diarization-community-1
-#   3. Install Claude CLI (for make-notes.sh): https://docs.anthropic.com/claude-code
+#   3. Install the selected note LLM CLI (claude-oauth-run or codex)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,4 +55,4 @@ echo "---"
 echo "done. next steps:"
 echo "  - cp .env.example .env && edit .env"
 echo "  - accept pyannote HF licenses (see comments at top)"
-echo "  - install Claude CLI"
+echo "  - install the selected note LLM CLI (claude-oauth-run or codex)"

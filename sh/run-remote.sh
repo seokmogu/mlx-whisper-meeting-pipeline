@@ -44,7 +44,7 @@ if ! REMOTE_HOST="$(pick_remote_host)"; then
 fi
 echo "using REMOTE_HOST=$REMOTE_HOST (candidates: $REMOTE_HOSTS)"
 
-# OAuth 토큰은 원격 호스트의 claude-oauth 프로파일에서 자체 조달한다 (make-notes.sh).
+# LLM provider credentials are resolved on the remote host by make-notes.sh/run-note-llm.sh.
 # 로컬 셸의 토큰을 ssh 너머로 넘기지 않는다 — launchd 등 비대화형 트리거 호환.
 
 echo "[1/8] refreshing employee roster..."

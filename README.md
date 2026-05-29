@@ -2,32 +2,37 @@
 
 English | [한국어](#핵심-설계)
 
-Distributed meeting-notes pipeline for Korean audio. It syncs macOS Voice Memos or Notion AI transcripts, runs transcription and diarization on a remote Apple Silicon compute host, generates structured Markdown notes with Claude CLI, and can optionally publish newly generated notes back into a Notion database.
+Local-first meeting-notes pipeline for Korean audio. The active production path watches macOS Voice Memos on this MacBook, treats every local recording as a Worxphere meeting, transcribes and diarizes it locally, generates structured Markdown notes with Claude Code, and creates meeting-context-reviewer artifacts. Notion upload and remote compute are optional paths, not part of the current automatic flow.
 
 ## English Overview
 
 The pipeline keeps private meeting artifacts out of git while making the processing code reusable. Each meeting project is a subdirectory under `audio/`, `transcripts/`, and `notes/`, configured by `MEETING_PROJECTS`. This MacBook is currently configured as a Worxphere-only recorder: `VOICE_MEMO_FORCE_PROJECT=worxphere` sends every local Voice Memo to `audio/worxphere/` regardless of memo title.
 
-Processing is designed as an idempotent loop: sync recordings, rsync work state to a remote Mac, transcribe with `mlx-whisper`, split speakers with `pyannote`, generate Markdown with Claude CLI and WebSearch, pull results back, and optionally commit project note repositories. Past notes feed a glossary and roster so future transcripts improve over time.
+The active loop is idempotent: sync completed Voice Memos, import manually copied phone recordings, trim/merge/quarantine audio, transcribe with `mlx-whisper`, split speakers with `pyannote`, generate Markdown with `claude-oauth-run` and WebSearch, then run `meeting-context-reviewer`. Past notes and the employee roster feed the next run so transcripts and person matching improve over time.
 
 ## Quick Start
 
 ```bash
 cp .env.example .env
-# Fill in HF_TOKEN, MEETING_PROJECTS, VOICE_MEMO_FORCE_PROJECT, REMOTE_HOST.
+# Fill in HF_TOKEN, MEETING_PROJECTS, VOICE_MEMO_FORCE_PROJECT.
 
-# On the remote Apple Silicon compute host:
+# First-time local setup:
 ./sh/setup.sh
 
-# Manual run from the local recording Mac:
-./sh/run-remote.sh
+# Manual local dry-run and run:
+./sh/run-local-pipeline.sh --dry-run
+./sh/run-local-pipeline.sh
+
+# Automatic Voice Memos processing:
+./sh/local-launchd.sh install
+./sh/local-launchd.sh status
 ```
 
-For automatic Voice Memos processing, run `./sh/local-launchd.sh install`. The installer baselines existing recordings as already seen, loads the user LaunchAgent, and keeps the local path read-only with respect to Notion and Git remotes.
+The launchd installer baselines existing recordings as already seen, loads the user LaunchAgent, and keeps the local path read-only with respect to Notion and Git remotes.
 
 ## Optional Notion Upload
 
-Set `NOTION_UPLOAD_DATABASE_ID` to upload only newly generated Markdown notes to a Notion database. Existing notes are not backfilled by default. Pending uploads are stored in `state/notion-upload/pending.txt`; successful uploads and title matches are removed from the queue, while failures remain for retry.
+This is not part of the active local Voice Memos automation. If explicitly enabled for a separate run, set `NOTION_UPLOAD_DATABASE_ID` to upload only newly generated Markdown notes to a Notion database. Existing notes are not backfilled by default. Pending uploads are stored in `state/notion-upload/pending.txt`; successful uploads and title matches are removed from the queue, while failures remain for retry.
 
 ```bash
 NOTION_NATIVE_PROFILE=                  # blank = notion-native-toolkit default profile
@@ -39,34 +44,51 @@ The uploader uses [`notion-native-toolkit`](https://github.com/seokmogu/notion-n
 
 ---
 
-한국어 회의를 자동으로 정리·축적하는 분산 파이프라인.
-녹음 소스는 macOS Voice Memos 또는 Notion AI 전사, 처리는 별도의 Apple Silicon 컴퓨트 호스트에서 mlx-whisper + pyannote + Claude CLI, 결과는 마크다운 노트로 쌓입니다.
+한국어 회의를 자동으로 정리·축적하는 로컬 우선 파이프라인.
+현재 운영 소스는 이 MacBook의 macOS Voice Memos이며, 모든 녹음은 제목과 무관하게 Worxphere 회의로 처리됩니다. Notion 업로드와 원격 컴퓨트는 선택 경로이고, 자동 실행 경로에는 포함하지 않습니다.
 
 ## 핵심 설계
 
 ```
-  [로컬 Mac]   Voice Memos 녹음              Notion AI 전사 (notion.db / API)
-      │                                              │
-      │ sync-voice-memos.sh                          │ import-notion-api.sh
-      ▼                                              ▼
-  audio/<project>/*.m4a                       transcripts/<project>/notion_*.txt
-      │                                              │
-      └──────────── rsync ──────────────► [원격 Apple Silicon Mac, SSH]
-                                                     │
-                                    transcribe.sh (enhance for STT, raw-ish audio for diarization)
-                                                     │
-                                            transcripts/<project>/*.txt
-                                                     │
-                                    make-notes.sh (Claude CLI + WebSearch + roster)
-                                                     │
-                                              notes/<project>/*.md
-                                                     │
-                                    rsync ◄─────────┘
-  extract_glossary.py (notes → 핫워드)   build_roster.sh (Notion 멤버 명부)
-                  │                               │
-                  └─────── glossary/ ─────────────┘
-                              │
-                              ▼ (다음 run 시 transcribe/make-notes에 주입)
+  [이 MacBook] Voice Memos 녹음
+      │
+      │ launchd → run-local-pipeline.sh
+      ▼
+  sync-voice-memos.sh + import-manual-audio.sh
+      │
+      ▼
+  audio/worxphere/*.m4a
+      │
+      ▼
+  prepare-audio-queue.py
+      │  - 앞/뒤 비발화 trim
+      │  - 중단 후 재녹음 merge
+      │  - 짧은 무음/잡음 격리
+      ▼
+  transcribe.sh
+      │  - mlx-whisper: 한국어 전사
+      │  - pyannote: 화자 분리
+      ▼
+  transcripts/worxphere/*.txt
+      │
+      ▼
+  make-notes.sh
+      - Claude Code가 전사 원문을 읽고 고유명사/인물/액션아이템을 보정
+      - WebSearch + employee_roster.tsv + glossary 사용
+      │
+      ▼
+  notes/worxphere/*.md
+      │
+      ▼
+  meeting-context-reviewer
+      │
+      ▼
+  ../meeting-context-reviewer/reviews/<meeting-id>/
+
+  extract_glossary.py / build_employee_roster.sh
+      │
+      ▼
+  glossary/ (다음 run 시 transcribe/make-notes/reviewer에 주입)
 ```
 
 `<project>`는 `.env`의 `MEETING_PROJECTS`로 정의 (공백 분리). 각 프로젝트는 `audio/`·`transcripts/`·`notes/` 아래 독립 서브디렉터리를 갖고 독립적으로 처리됩니다.
@@ -125,8 +147,9 @@ filter-low-content-transcripts.py
 transcripts/worxphere/*.txt
         ▼
 make-notes.sh
-  - Claude CLI + WebSearch
+  - Claude Code + WebSearch
   - glossary + employee_roster.tsv 주입
+  - 원본 transcript 파일을 덮어쓰지 않고, 보정 결과를 notes/<project>/*.md에 반영
         ▼
 notes/worxphere/*.md
         ▼
@@ -185,7 +208,7 @@ Voice Memos를 중단했다가 바로 다시 녹음하면 macOS는 별도 `.m4a`
    mlx-whisper의 `--initial-prompt`로 주입되어 다음 녹음 전사 시 제품명·팀명·인명 등의 오류율을 낮춤.
 
 2. **WebSearch 워싱** (`make-notes.sh`)
-   Claude CLI가 전사 오류로 의심되는 고유명사를 WebSearch로 검증 후 정정 → `## 검증 완료`에 `원문 → 정정 (근거)` 형태로 기록.
+   Claude Code가 전사 오류로 의심되는 고유명사를 WebSearch로 검증 후 정정 → `## 검증 완료`에 `원문 → 정정 (근거)` 형태로 기록.
 
 3. **이름 정규화** (`build_roster.sh` + make-notes 프롬프트)
    Notion desktop 앱의 로컬 SQLite(`notion.db`)에서 워크스페이스 멤버를 뽑아 `roster.tsv`로 저장.
@@ -195,7 +218,7 @@ Voice Memos를 중단했다가 바로 다시 녹음하면 macOS는 별도 `.m4a`
 
 녹음 품질은 후처리로 보완하되, 전사와 화자 분리는 서로 다른 오디오를 사용합니다. 전사에는 Demucs 보컬 분리, EQ, denoise, loudness normalization을 적용한 음성 향상 WAV를 넣어 Whisper 인식률을 높입니다. 반대로 화자 분리에는 원본에 가까운 16k mono WAV를 넣어 speaker embedding이 훼손되지 않게 합니다. 실제 테스트에서 denoise/loudnorm까지 적용한 오디오를 pyannote에 넣으면 두 화자가 92%/8%로 무너졌고, 원본계열 16k mono에서는 31%/69%로 정상 분리되었습니다.
 
-화자 분리는 `pyannote/speaker-diarization-community-1`의 exclusive diarization을 사용합니다. 이 결과를 `mlx-whisper`의 word timestamp에 매칭해 화자가 바뀌는 지점에서 transcript segment를 다시 쪼갭니다. 이후 Claude CLI가 roster, glossary, WebSearch를 이용해 이름·고유명사·전사 오류를 보정하고 최종 미팅노트를 생성합니다.
+화자 분리는 `pyannote/speaker-diarization-community-1`의 exclusive diarization을 사용합니다. 이 결과를 `mlx-whisper`의 word timestamp에 매칭해 화자가 바뀌는 지점에서 transcript segment를 다시 쪼갭니다. 이후 Claude Code가 roster, glossary, WebSearch를 이용해 이름·고유명사·전사 오류를 보정하고 최종 미팅노트를 생성합니다.
 
 ## 설정
 
@@ -219,7 +242,8 @@ cp .env.example .env
 #   NOTION_UPLOAD_DATABASE_ID — (선택) 생성된 Markdown 노트를 업로드할 Notion DB
 #   NOTION_SPACE_ID          — (선택, build_roster.sh용)
 #   ROSTER_EMAIL_DOMAIN      — (선택, build_roster.sh용)
-#   REMOTE_HOST              — 원격 컴퓨트 호스트 SSH alias
+#   REMOTE_HOST              — (선택) run-remote.sh를 쓸 때만 필요한 SSH alias
+#   CLAUDE_OAUTH_RUN         — (선택) claude-oauth-run 경로 override
 
 # launchd로 Voice Memos 자동 감지 트리거:
 ./sh/local-launchd.sh install
@@ -227,14 +251,29 @@ cp .env.example .env
 # /bin/bash, /usr/bin/find에 Full Disk Access 권한 부여 필요
 ```
 
-### 리모트 (컴퓨트 머신, Apple Silicon Mac)
+### Claude Code CLI 확인
+
+`make-notes.sh`는 Claude Code를 직접 호출하지 않고 `claude-oauth-run` wrapper를 통해 비대화형으로 실행한다. 현재 이 MacBook에서는 다음 조건을 확인했다.
+
+```bash
+command -v claude-oauth-run
+claude-oauth-run --version
+claude-oauth print-token 2>/dev/null | wc -c
+printf 'OK만 출력해' | claude-oauth-run --dangerously-skip-permissions -p --tools "" --max-budget-usd 0.50
+```
+
+성공 기준은 실행 파일 경로가 출력되고, version이 출력되고, token 길이가 0보다 크고, 마지막 명령이 `OK`를 출력하는 것이다. `make-notes.sh`는 `CLAUDE_OAUTH_RUN`이 설정돼 있으면 그 경로를 쓰고, 없으면 PATH와 `~/.local/bin/claude-oauth-run` 순서로 찾는다.
+
+### 선택 경로: 리모트 컴퓨트 머신
+
+현재 자동 플로우는 로컬 `run-local-pipeline.sh`다. 아래 설정은 `run-remote.sh`로 별도 원격 Apple Silicon Mac에서 처리할 때만 필요하다.
+
 ```bash
 ./sh/setup.sh   # Homebrew python@3.11, ffmpeg, venv, mlx-whisper, pyannote 설치
 # 별도: HuggingFace에서 pyannote gated 모델 약관을 계정별 1회 수락
 #   https://huggingface.co/pyannote/segmentation-3.0
 #   https://huggingface.co/pyannote/speaker-diarization-community-1
-# 별도: Claude CLI 설치 (make-notes.sh용)
-#   https://docs.anthropic.com/claude-code
+# 별도: claude-oauth-run / Claude Code 설치 (make-notes.sh용)
 ```
 
 ### Notion 스페이스 ID 확인 (build_roster.sh용)
@@ -255,7 +294,7 @@ sqlite3 ~/Library/Application\ Support/Notion/notion.db "SELECT id, name FROM sp
 | Voice Memos 자동 처리 수동 트리거 | `./sh/local-launchd.sh kickstart` | 권한/동작 확인 |
 | Notion 전사 임포트 (API) | `./sh/import-notion-api.sh [YYYY-MM-DD]` | 필요 시 |
 | Notion 전사 임포트 (notion.db) | `./sh/import-notion.sh [YYYY-MM-DD]` | 필요 시 (대안 경로) |
-| 전체 파이프라인 수동 실행 | `./sh/run-remote.sh` | 수동 트리거 |
+| 원격 컴퓨트 선택 실행 | `./sh/run-remote.sh` | 현재 자동 플로우 아님 |
 | 직원명단 roster 갱신 | `./sh/build_employee_roster.sh` | 노트 생성 전 자동, 필요 시 수동 |
 | 멤버 명부 갱신 | `./sh/build_roster.sh` | 월 1회 |
 
@@ -264,6 +303,8 @@ sqlite3 ~/Library/Application\ Support/Notion/notion.db "SELECT id, name FROM sp
 ### Voice Memos 자동화
 
 로컬 자동화 entrypoint는 `run-local-pipeline.sh`이다. 이 경로는 Voice Memos sync → local transcription → Markdown note → meeting-context-reviewer 산출물까지만 수행한다. Notion 업로드와 Git push는 실행하지 않는다.
+
+LLM 전사 보정은 `transcribe.sh`가 아니라 `make-notes.sh`에서 수행한다. `transcribe.sh`는 Whisper/pyannote 결과를 `transcripts/<project>/*.txt`로 남기고, `make-notes.sh`가 그 원본을 읽어 Claude Code, WebSearch, glossary, 직원명단으로 이름·제품명·회사명·액션아이템 담당자를 보정한다. 이 보정 결과는 `notes/<project>/*.md`에 들어가며, 원본 transcript 파일은 감사/재처리를 위해 유지한다.
 
 ```bash
 ./sh/run-local-pipeline.sh --dry-run
@@ -303,7 +344,9 @@ launchd로 켜려면 관리 스크립트를 사용한다. `install`은 현재 Vo
 
 `make-notes.sh`는 이 roster를 Claude 프롬프트에 넣어 인물명과 액션아이템 담당자를 보정한다. `run-local-pipeline.sh`와 `run-remote.sh`는 노트 생성 전에 roster를 먼저 갱신한다.
 
-## Notion DB 업로드
+## 선택 경로: Notion DB 업로드
+
+현재 로컬 Voice Memos 자동화는 Notion 업로드를 하지 않는다. Notion write는 매번 별도 승인이 필요하다.
 
 `NOTION_UPLOAD_DATABASE_ID`가 설정되어 있으면 `run-remote.sh`가 실행 전후의 `notes/<project>/*.md` 목록을 비교해 이번 실행에서 새로 생성된 회의록만 Notion DB에 업로드합니다. 기존 파일은 백필하지 않습니다. 업로드 대상은 `state/notion-upload/pending.txt`에 큐잉되고, 성공하거나 DB에 같은 제목이 이미 있으면 큐에서 제거됩니다. 실패한 항목은 큐에 남아 다음 `run-pipeline.sh` 또는 `run-remote.sh` 실행 때 재시도됩니다. DB ID가 비어 있으면 새 노트를 큐에 넣지 않고 업로드 단계를 건너뜁니다.
 
@@ -335,7 +378,7 @@ NOTION_UPLOAD_DATABASE_ID=00000000000000000000000000000000
 
 - 오디오·전사·노트·glossary·로그는 `.gitignore`로 전부 제외 (프라이버시)
 - `notion.db`는 Notion 데스크톱 앱의 로컬 캐시로 내부 구현 디테일. 스키마가 앱 업데이트로 바뀔 수 있음
-- `run-remote.sh` 각 단계는 idempotent — 이미 생성된 노트/전사는 스킵
+- `run-local-pipeline.sh`와 `run-remote.sh` 각 단계는 idempotent — 이미 생성된 노트/전사는 스킵
 - 화자 분리는 `pyannote/speaker-diarization-community-1`의 exclusive diarization을 사용. `pyannote.audio` 4.x가 필요하므로 `mlx-whisper` venv와 분리된 `.venv-diar-test`에서 실행
-- Claude CLI 호출은 `--dangerously-skip-permissions --tools "WebSearch"` 모드. 대규모 배치 시 API 비용 주의 (300건 ≈ 3~4시간)
+- Claude Code 호출은 `--dangerously-skip-permissions --tools "WebSearch"` 모드. 대규모 배치 시 API 비용 주의 (300건 ≈ 3~4시간)
 - `make-notes.sh`는 `claude-oauth-run --dangerously-skip-permissions -p --tools WebSearch`로 Claude를 호출해 launchd 등 비대화형 트리거에서도 작동하게 한다.

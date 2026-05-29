@@ -77,6 +77,18 @@ backup_note() {
 if [ "$DRY_RUN" -eq 0 ]; then
   # Claude 호출은 이 호스트의 활성 프로파일(claude-oauth-run이 사용하는 것)에서 토큰을 조달한다.
   # 이미 환경변수로 들어와 있으면 그것을 쓴다.
+  CLAUDE_OAUTH_RUN="${CLAUDE_OAUTH_RUN:-}"
+  if [ -z "$CLAUDE_OAUTH_RUN" ]; then
+    if command -v claude-oauth-run >/dev/null 2>&1; then
+      CLAUDE_OAUTH_RUN="$(command -v claude-oauth-run)"
+    elif [ -x "$HOME/.local/bin/claude-oauth-run" ]; then
+      CLAUDE_OAUTH_RUN="$HOME/.local/bin/claude-oauth-run"
+    fi
+  fi
+  if [ -z "$CLAUDE_OAUTH_RUN" ]; then
+    echo "claude-oauth-run not found — Claude Code OAuth wrapper를 PATH 또는 CLAUDE_OAUTH_RUN에 설정하세요." >&2
+    exit 1
+  fi
   if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     if command -v claude-oauth >/dev/null 2>&1; then
       export CLAUDE_CODE_OAUTH_TOKEN="$(claude-oauth print-token)"
@@ -219,7 +231,7 @@ ROSTER
 TAIL
       cat "$transcript"
     } | env -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY -u CLAUDE_API_KEY \
-        "$HOME/.local/bin/claude-oauth-run" --dangerously-skip-permissions -p \
+        "$CLAUDE_OAUTH_RUN" --dangerously-skip-permissions -p \
         --tools "WebSearch" \
         > "$out"
 

@@ -23,7 +23,7 @@ cp .env.example .env
 ./sh/run-remote.sh
 ```
 
-For automatic Voice Memos processing, copy `launchd/com.example.voicememo-sync.plist.example` to `~/Library/LaunchAgents/`, edit the paths, and grant Full Disk Access to `/bin/bash` so it can read the Voice Memos group container.
+For automatic Voice Memos processing, run `./sh/local-launchd.sh install`. The installer baselines existing recordings as already seen, loads the user LaunchAgent, and keeps the local path read-only with respect to Notion and Git remotes.
 
 ## Optional Notion Upload
 
@@ -71,6 +71,71 @@ The uploader uses [`notion-native-toolkit`](https://github.com/seokmogu/notion-n
 
 `<project>`는 `.env`의 `MEETING_PROJECTS`로 정의 (공백 분리). 각 프로젝트는 `audio/`·`transcripts/`·`notes/` 아래 독립 서브디렉터리를 갖고 독립적으로 처리됩니다.
 
+## 현재 운영 플로우
+
+현재 켜둔 운영 경로는 Voice Memos 기반 로컬 자동화다. 이 경로는 회의록과 리뷰 산출물까지만 만들고, Notion 업로드와 Git push는 하지 않는다.
+
+```
+macOS Voice Memos 원본
+  /Users/seokmogu/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/*.m4a
+        │
+        │ launchd: com.seokmogu.voicememo-local-pipeline
+        │   - WatchPaths: Voice Memos Recordings 폴더
+        │   - StartInterval: 120초
+        │   - entrypoint: sh/run-local-pipeline.sh
+        ▼
+sync-voice-memos.sh
+  - 60초보다 어린 파일은 skip
+  - state/voice-memos-seen.txt에 있는 기존 파일은 skip
+  - VOICE_MEMO_ROUTING 또는 VOICE_MEMO_DEFAULT_PROJECT로 project 결정
+        ▼
+audio/worxphere/*.m4a
+        ▼
+transcribe.sh
+  - mlx-whisper: 한국어 전사
+  - pyannote: 화자 분리
+        ▼
+transcripts/worxphere/*.txt
+        ▼
+make-notes.sh
+  - Claude CLI + WebSearch
+  - glossary + employee_roster.tsv 주입
+        ▼
+notes/worxphere/*.md
+        ▼
+meeting-context-reviewer
+  - AX-OS profile
+  - WDC SQLite/FTS evidence
+  - employee roster 기반 사람 식별
+        ▼
+/Users/seokmogu/project/meeting-context-reviewer/reviews/<meeting-id>/
+  - review.md
+  - review.json
+  - wiki-update-candidates.md
+```
+
+### 저장 위치
+
+| 종류 | 위치 | 비고 |
+|---|---|---|
+| 원본 Voice Memos | `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/*.m4a` | macOS Voice Memos 앱이 관리 |
+| 처리 대상 오디오 | `audio/<project>/*.m4a` | 현재 기본 project는 `worxphere` |
+| 전사 결과 | `transcripts/<project>/*.txt` | 화자 분리 반영 |
+| 회의록 | `notes/<project>/*.md` | Markdown 산출물 |
+| 리뷰 결과 | `../meeting-context-reviewer/reviews/<meeting-id>/` | reviewer repo의 로컬 산출물 |
+| 기존 녹음 baseline | `state/voice-memos-seen.txt` | 자동화 활성화 전 과거 녹음 backfill 방지 |
+| 실행 로그 | `logs/local-pipeline.log` | launchd 실행도 이 파일에 기록 |
+
+### 자동화 상태 확인
+
+```bash
+./sh/local-launchd.sh status
+./sh/run-local-pipeline.sh --dry-run
+tail -80 logs/local-pipeline.log
+```
+
+정상 상태의 핵심 신호는 `local-launchd.sh status`에서 `watching = 1`, 최신 실행의 `last exit code = 0`, 그리고 dry-run에서 기존 파일이 `skipped (already exists/seen)`로 잡히는 것이다.
+
 ## 피드백 루프
 
 각 회의가 쌓일수록 다음 회의 정확도가 좋아지도록 세 가지 경로로 학습 데이터가 누적됩니다:
@@ -116,11 +181,9 @@ cp .env.example .env
 #   REMOTE_HOST              — 원격 컴퓨트 호스트 SSH alias
 
 # launchd로 Voice Memos 자동 감지 트리거:
-cp launchd/com.example.voicememo-sync.plist.example \
-   ~/Library/LaunchAgents/com.<me>.voicememo-sync.plist
-# plist 내 USER/경로 수정 후:
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.<me>.voicememo-sync.plist
-# /bin/bash 에 Full Disk Access 권한 부여 필요 (Voice Memos group container 읽기)
+./sh/local-launchd.sh install
+./sh/local-launchd.sh status
+# /bin/bash, /usr/bin/find에 Full Disk Access 권한 부여 필요
 ```
 
 ### 리모트 (컴퓨트 머신, Apple Silicon Mac)
@@ -145,7 +208,9 @@ sqlite3 ~/Library/Application\ Support/Notion/notion.db "SELECT id, name FROM sp
 | Voice Memos 로컬 dry-run | `./sh/run-local-pipeline.sh --dry-run` | 자동화 설정 전/후 점검 |
 | Voice Memos 로컬 처리 | `./sh/run-local-pipeline.sh` | 수동 트리거 |
 | 기존 회의록 재생성 | `./sh/run-local-pipeline.sh --force-notes --only "worxphere/YYYYMMDD HHMMSS"` | 직원명단/프롬프트 개선 후 재처리 |
-| Voice Memos 자동 처리 | `launchd/com.seokmogu.voicememo-local-pipeline.plist` | 녹음 발생 시/2분 주기 |
+| Voice Memos 자동 처리 설치 | `./sh/local-launchd.sh install` | 최초 1회 |
+| Voice Memos 자동 처리 상태 | `./sh/local-launchd.sh status` | 점검 |
+| Voice Memos 자동 처리 수동 트리거 | `./sh/local-launchd.sh kickstart` | 권한/동작 확인 |
 | Notion 전사 임포트 (API) | `./sh/import-notion-api.sh [YYYY-MM-DD]` | 필요 시 |
 | Notion 전사 임포트 (notion.db) | `./sh/import-notion.sh [YYYY-MM-DD]` | 필요 시 (대안 경로) |
 | 전체 파이프라인 수동 실행 | `./sh/run-remote.sh` | 수동 트리거 |
@@ -175,7 +240,7 @@ launchd로 켜려면 관리 스크립트를 사용한다. `install`은 현재 Vo
 ./sh/local-launchd.sh uninstall
 ```
 
-권한이 부족하면 `logs/local-pipeline.log`에 `Voice Memos folder cannot be listed` 또는 `Operation not permitted`가 남는다. 이 경우 macOS System Settings → Privacy & Security → Full Disk Access에서 `/bin/bash`를 허용한 뒤 `./sh/local-launchd.sh kickstart`로 다시 확인한다.
+권한이 부족하면 `logs/local-pipeline.log`에 `Voice Memos folder cannot be listed` 또는 `Operation not permitted`가 남는다. 이 경우 macOS System Settings → Privacy & Security → Full Disk Access에서 `/bin/bash`와 `/usr/bin/find`를 허용한 뒤 `./sh/local-launchd.sh kickstart`로 다시 확인한다.
 
 녹음 직후 파일이 아직 쓰이는 중일 수 있어 `sync-voice-memos.sh`는 기본 60초보다 어린 `.m4a` 파일을 건너뛴다. 필요하면 `.env`에서 `VOICE_MEMO_MIN_AGE_SECONDS`로 조정한다. `VOICE_MEMO_ROUTING`은 제목 prefix 기반이며, 단일 프로젝트 자동 수집으로 쓸 때는 `VOICE_MEMO_DEFAULT_PROJECT=worxphere`를 둘 수 있다.
 

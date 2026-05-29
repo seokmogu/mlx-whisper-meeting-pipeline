@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 TRANSCRIPT_DIR="$BASE/transcripts"
 NOTES_DIR="$BASE/notes"
+MEETING_NOTES_SKILL="${MEETING_NOTES_SKILL:-$BASE/skills/meeting-minutes/SKILL.md}"
+MEETING_PREVIOUS_NOTES_LIMIT="${MEETING_PREVIOUS_NOTES_LIMIT:-3}"
+MEETING_PREVIOUS_NOTE_MAX_LINES="${MEETING_PREVIOUS_NOTE_MAX_LINES:-160}"
 FORCE=0
 DRY_RUN=0
 ONLY=""
@@ -89,11 +92,70 @@ backup_note() {
   echo "backed up existing note: $backup_dir/$name.md"
 }
 
+emit_previous_note_context() {
+  local proj="$1"
+  local current_name="$2"
+  local out_dir="$3"
+  local limit="$MEETING_PREVIOUS_NOTES_LIMIT"
+  local max_lines="$MEETING_PREVIOUS_NOTE_MAX_LINES"
+
+  case "$limit" in
+    ""|0)
+      return 0
+      ;;
+  esac
+  [ -d "$out_dir" ] || return 0
+
+  local tmp
+  tmp="$(mktemp)"
+  find "$out_dir" -maxdepth 1 -type f -name '*.md' ! -name "$current_name.md" -print | sort | tail -n "$limit" > "$tmp"
+  if [ ! -s "$tmp" ]; then
+    rm -f "$tmp"
+    return 0
+  fi
+
+  cat <<PREV
+
+---
+이전 회의록 참고자료:
+- 같은 project($proj)의 최근 회의록에서 후속 액션/결정/리스크 판단에 필요한 섹션만 발췌했다.
+- 아래 내용은 Previous Action Follow-up, 반복 이슈, 중복 액션 판단에만 사용한다.
+
+PREV
+
+  while IFS= read -r prev; do
+    [ -f "$prev" ] || continue
+    echo "### $(basename "$prev")"
+    awk -v max_lines="$max_lines" '
+      BEGIN { capture = 0; count = 0 }
+      /^## / {
+        capture = ($0 ~ /^## ([0-9]+[.] )?(핵심 요약|요약|주요 결정|결정사항|Agenda Evaluation|Previous Action Follow-up|Action Items|액션 아이템|Task Handoff|리스크|다음 회의)/)
+      }
+      capture && count < max_lines {
+        print
+        count++
+      }
+    ' "$prev"
+    echo ""
+  done < "$tmp"
+
+  rm -f "$tmp"
+}
+
 if [ -n "$LLM_PROVIDER_OVERRIDE" ]; then
   export MEETING_LLM_PROVIDER="$LLM_PROVIDER_OVERRIDE"
 fi
 if [ -n "$LLM_COMPARE_OVERRIDE" ]; then
   export MEETING_LLM_COMPARE="$LLM_COMPARE_OVERRIDE"
+fi
+
+if [ ! -f "$MEETING_NOTES_SKILL" ]; then
+  echo "meeting notes skill not found: $MEETING_NOTES_SKILL" >&2
+  exit 1
+fi
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo "dry-run skill: $MEETING_NOTES_SKILL"
 fi
 
 read -r -a PROJECTS <<<"${MEETING_PROJECTS:-worxphere}"
@@ -141,56 +203,32 @@ for proj in "${PROJECTS[@]}"; do
 
     {
       cat <<'PROMPT'
-다음은 한국어 회의 녹취록입니다. 두 가지 형식 중 하나로 들어옵니다:
-- 형식 A (WhisperX): 각 발화가 `[시작 - 끝] 화자:` 로 표기되며 화자는 A, B로 익명화됨
-- 형식 B (Notion AI): 상단에 `[Notion AI 전사 ...]` 헤더가 있고 화자/타임스탬프 없이 발화 단위로 줄바꿈된 평문
+다음은 한국어 회의 녹취록을 운영 가능한 회의록으로 정리하는 작업입니다.
 
-이를 바탕으로 정리된 미팅노트를 마크다운 형식으로 작성해주세요.
+반드시 아래 `SKILL.md`를 작성 규칙의 source of truth로 사용하세요.
+프론트매터는 메타데이터이고, 본문 지침과 Output Contract를 우선합니다.
 
-요구사항:
-- 반드시 한국어로 작성
-- 서론/사족 없이 마크다운 본문만 출력
-- 첫 줄 H1은 `# 미팅노트`가 아니라 회의 내용을 대표하는 구체적 제목으로 작성. 예: `# AI DevOS 및 조직 구조 논의`
-- 제목은 날짜/시간 없이 15~45자 정도로, DB나 파일 목록에서 구분 가능하게 핵심 주제 1~2개를 포함
-- 없는 정보는 추측하지 말고 해당 섹션 생략
-- 형식 A인 경우에만 화자(A/B)의 역할을 대화 맥락에서 추론해 표기 (예: "A(대표)", "B(컨설턴트)"). 확신이 없으면 A/B 그대로 사용. 형식 B는 화자 관련 표기 생략
-- **고유명사 워싱 (웹검색 도구 활용)**: 회사명·인명·제품명·약어 중 전사 오류로 의심되는 항목은 사용 가능한 웹검색 도구(Claude Code WebSearch 또는 Codex web_search)로 검증 후 정정:
-  1. 문맥(업종·규모·기능 등)에서 검색 쿼리를 설계해 실존 여부 확인
-  2. 검증된 정정본으로 본문을 대체하고, 원문-정정본 쌍을 `## 검증 완료` 섹션에 기록
-  3. 검색해도 확정 못한 항목만 `## 검증 필요` 섹션에 `원문 → 추정 (근거)` 형식으로 남김
-  4. 불필요한 중복 검색은 피하고, 한 키워드당 최대 1회 검색
-  5. 웹검색 도구가 제공되지 않았거나 실제 검색을 수행하지 않았다면 "검색 결과", "웹검색 결과", "공개 자료 확인"처럼 외부 검증을 암시하지 말고 `검색 미수행` 또는 `내부 명칭 가능성`으로만 기록
-  예시 흐름: "나이스DI (기업정보 DB, 700만건)" → WebSearch: "한국 기업정보 DB 700만" → "NICE평가정보" 확인 → 본문 정정 + 검증 완료에 기록
-- 확실한 숫자·날짜·금액은 원문 그대로 유지
+출력 원칙:
+- 한국어 Markdown 본문만 출력
+- 서론/사족 금지
+- 원문 transcript 전체를 부록으로 붙이지 않음
+- 없는 정보는 만들지 말고 `확인 필요`로 표시
+- 회의가 45분 이상이고 내용이 충분하면 짧은 요약 노트로 압축하지 말고 상세 운영 회의록으로 작성
 
-구조:
-# {회의 주제 제목}
-
-## 요약
-3~5줄 핵심 요약
-
-## 주요 논의사항
-- 주제별로 정리
-
-## 결정사항
-- 합의된 사항
-
-## 액션 아이템
-- [ ] 담당자(파악 가능 시) — 할 일
-
-## 참석자/언급 인물
-- 직원명단과 대화 맥락으로 확실히 특정되는 인물만 `이름(소속팀, 직책)` 형식으로 기록
-- 동명이인/불확실한 호칭은 원문 유지
-
-## 기타 메모
-- 언급된 인물, 회사, 숫자, 링크 등 사실 정보
-
-## 검증 완료
-- `원문` → **정정** (출처·근거)
-
-## 검증 필요
-- 웹검색해도 확정 못한 전사 오류 의심 항목 (해당 시에만)
+---
+사용할 회의록 작성 스킬:
 PROMPT
+      cat "$MEETING_NOTES_SKILL"
+      cat <<'PROMPT'
+
+---
+현재 회의 메타데이터:
+PROMPT
+      echo "- Project: \`$proj\`"
+      echo "- Source transcript: \`$transcript\`"
+      echo "- Output note: \`$out\`"
+      echo "- Generated label: \`AI 추정\`"
+      emit_previous_note_context "$proj" "$name" "$out_dir"
       if [ -s "$BASE/glossary/employee_roster.tsv" ]; then
         cat <<'ROSTER'
 

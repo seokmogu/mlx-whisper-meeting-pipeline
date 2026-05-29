@@ -14,7 +14,7 @@ usage() {
   cat <<'USAGE'
 Usage: run-note-llm.sh --out FILE [--project PROJECT --name NAME] [--provider claude|codex] [--compare]
 
-Reads a fully rendered meeting-note prompt from stdin and writes the selected
+Reads a fully rendered meeting-note request payload from stdin and writes the selected
 LLM provider's Markdown output to FILE.
 
 Environment:

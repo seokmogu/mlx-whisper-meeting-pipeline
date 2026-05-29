@@ -40,7 +40,7 @@ NOTION_NATIVE_TOOLKIT_DIR=$HOME/project/notion-native-toolkit
 NOTION_UPLOAD_DATABASE_ID=00000000000000000000000000000000
 ```
 
-The uploader uses [`notion-native-toolkit`](https://github.com/seokmogu/notion-native-toolkit), maps common database properties such as title/date/participants/type, and updates an existing page when local state already knows its page id. New notes use the first Markdown H1 as the Notion title, so `make-notes.sh` prompts the selected LLM to generate a specific topic title instead of a generic `# 미팅노트`.
+The uploader uses [`notion-native-toolkit`](https://github.com/seokmogu/notion-native-toolkit), maps common database properties such as title/date/participants/type, and updates an existing page when local state already knows its page id. New notes use the first Markdown H1 as the Notion title, so `skills/meeting-minutes/SKILL.md` requires a specific topic title instead of a generic `# 미팅노트`.
 
 ---
 
@@ -73,7 +73,8 @@ The uploader uses [`notion-native-toolkit`](https://github.com/seokmogu/notion-n
       │
       ▼
   make-notes.sh
-      - 선택된 LLM provider가 전사 원문을 읽고 고유명사/인물/액션아이템을 보정
+      - skills/meeting-minutes/SKILL.md를 회의록 작성 계약으로 사용
+      - 선택된 LLM provider가 전사 원문, 최근 회의록, 직원명단을 읽고 회의록을 작성
       - Claude Code WebSearch 또는 Codex web_search + employee_roster.tsv + glossary 사용
       │
       ▼
@@ -211,7 +212,7 @@ Voice Memos를 중단했다가 바로 다시 녹음하면 macOS는 별도 `.m4a`
 2. **웹검색 워싱** (`make-notes.sh`)
    선택된 LLM provider가 전사 오류로 의심되는 고유명사를 웹검색 도구로 검증 후 정정 → `## 검증 완료`에 `원문 → 정정 (근거)` 형태로 기록.
 
-3. **이름 정규화** (`build_roster.sh` + make-notes 프롬프트)
+3. **이름 정규화** (`build_roster.sh` + 회의록 작성 스킬)
    Notion desktop 앱의 로컬 SQLite(`notion.db`)에서 워크스페이스 멤버를 뽑아 `roster.tsv`로 저장.
    선택된 LLM provider가 "민수님" → `김민수_제품팀` 식으로 풀네임+팀 매칭. 동일 사람의 여러 전사 오류(`철수/철두/철식` 같은 변이)도 한 이름으로 수렴.
 
@@ -246,6 +247,7 @@ cp .env.example .env
 #   REMOTE_HOST              — (선택) run-remote.sh를 쓸 때만 필요한 SSH alias
 #   MEETING_LLM_PROVIDER     — claude 또는 codex
 #   MEETING_LLM_COMPARE      — 1이면 Claude/Codex 결과를 둘 다 저장
+#   MEETING_NOTES_SKILL      — 회의록 작성 SKILL.md 경로
 #   CLAUDE_MODEL             — (선택) Claude Code --model 값
 #   CODEX_MODEL              — (선택) Codex --model 값
 
@@ -263,6 +265,9 @@ cp .env.example .env
 |---|---|---|
 | `MEETING_LLM_PROVIDER` | `claude` | 실제 `notes/<project>/*.md`를 쓰는 provider. `claude` 또는 `codex` |
 | `MEETING_LLM_COMPARE` | `0` | `1`이면 선택 provider 결과와 반대 provider 결과를 `state/llm-comparisons/<project>/<meeting>/`에 저장 |
+| `MEETING_NOTES_SKILL` | `skills/meeting-minutes/SKILL.md` | 회의록 작성 규칙의 source of truth |
+| `MEETING_PREVIOUS_NOTES_LIMIT` | `3` | 같은 project의 최근 회의록 몇 개를 후속 액션 판단에 주입할지 |
+| `MEETING_PREVIOUS_NOTE_MAX_LINES` | `160` | 이전 회의록 1개당 발췌 최대 줄 수 |
 | `CLAUDE_OAUTH_RUN` | PATH 또는 `~/.local/bin/claude-oauth-run` | Claude Code OAuth wrapper 경로 override |
 | `CLAUDE_OAUTH_CLI` | PATH 또는 `~/.local/bin/claude-oauth` | OAuth token 조회 CLI 경로 override |
 | `CLAUDE_MODEL` | `highest` | `highest`는 Claude Code의 `opus` alias로 해석된다. `default`/빈 값은 Claude Code 프로파일 기본 모델 사용 |
@@ -347,7 +352,8 @@ sqlite3 ~/Library/Application\ Support/Notion/notion.db "SELECT id, name FROM sp
 | Voice Memos 로컬 dry-run | `./sh/run-local-pipeline.sh --dry-run` | 자동화 설정 전/후 점검 |
 | 폰 녹음 수동 import dry-run | `./sh/import-manual-audio.sh --dry-run` | 복사 파일 처리 전 점검 |
 | Voice Memos 로컬 처리 | `./sh/run-local-pipeline.sh` | 수동 트리거 |
-| 기존 회의록 재생성 | `./sh/run-local-pipeline.sh --force-notes --only "worxphere/YYYYMMDD HHMMSS"` | 직원명단/프롬프트 개선 후 재처리 |
+| 기존 회의록 재생성 | `./sh/run-local-pipeline.sh --force-notes --only "worxphere/YYYYMMDD HHMMSS"` | 직원명단/스킬 개선 후 재처리 |
+| 회의록 Codex skill 설치 | `./sh/install-meeting-skill.sh` | 최초 1회 또는 스킬 수정 후 |
 | Voice Memos 자동 처리 설치 | `./sh/local-launchd.sh install` | 최초 1회 |
 | Voice Memos 자동 처리 상태 | `./sh/local-launchd.sh status` | 점검 |
 | Voice Memos 자동 처리 수동 트리거 | `./sh/local-launchd.sh kickstart` | 권한/동작 확인 |
@@ -363,7 +369,22 @@ sqlite3 ~/Library/Application\ Support/Notion/notion.db "SELECT id, name FROM sp
 
 로컬 자동화 entrypoint는 `run-local-pipeline.sh`이다. 이 경로는 Voice Memos sync → local transcription → Markdown note → meeting-context-reviewer 산출물까지만 수행한다. Notion 업로드와 Git push는 실행하지 않는다.
 
-LLM 전사 보정은 `transcribe.sh`가 아니라 `make-notes.sh`에서 수행한다. `transcribe.sh`는 Whisper/pyannote 결과를 `transcripts/<project>/*.txt`로 남기고, `make-notes.sh`가 그 원본을 읽어 `sh/run-note-llm.sh`에 넘긴다. 선택된 provider(`MEETING_LLM_PROVIDER=claude|codex`)는 웹검색 도구, glossary, 직원명단으로 이름·제품명·회사명·액션아이템 담당자를 보정한다. 이 보정 결과는 `notes/<project>/*.md`에 들어가며, 원본 transcript 파일은 감사/재처리를 위해 유지한다.
+LLM 전사 보정은 `transcribe.sh`가 아니라 `make-notes.sh`에서 수행한다. `transcribe.sh`는 Whisper/pyannote 결과를 `transcripts/<project>/*.txt`로 남기고, `make-notes.sh`가 그 원본을 `skills/meeting-minutes/SKILL.md`와 함께 `sh/run-note-llm.sh`에 넘긴다. 선택된 provider(`MEETING_LLM_PROVIDER=claude|codex`)는 스킬 계약, 웹검색 도구, glossary, 직원명단, 최근 같은 project 회의록 발췌를 사용해 이름·제품명·회사명·액션아이템 담당자·이전 액션 후속 상태를 보정한다. 이 보정 결과는 `notes/<project>/*.md`에 들어가며, 원본 transcript 파일은 감사/재처리를 위해 유지한다.
+
+회의록 작성 스킬은 Samko `voice_note_whisper`의 운영 회의록 방식에 맞춰 짧은 요약 대신 다음 구조를 기본으로 한다.
+Codex에서 직접 이 스킬을 호출할 수 있게 하려면 `./sh/install-meeting-skill.sh`를 실행한다. 설치 대상은 기본적으로 `~/.codex/skills/worxphere-meeting-minutes`이고, 파이프라인은 repo 안의 같은 `SKILL.md`를 source of truth로 읽는다.
+
+- `핵심 요약`
+- `주요 결정 및 방향`
+- `주요 논의`
+- `Agenda Evaluation`
+- `Previous Action Follow-up`
+- `Action Items`
+- `Task Handoff`
+- `리스크 및 확인 필요 사항`
+- `다음 회의에서 확인할 사항`
+- `참석자/언급 인물`
+- `검증 완료` / `검증 필요`
 
 ```bash
 ./sh/run-local-pipeline.sh --dry-run
@@ -403,7 +424,7 @@ launchd로 켜려면 관리 스크립트를 사용한다. `install`은 현재 Vo
 ./sh/build_employee_roster.sh
 ```
 
-`make-notes.sh`는 이 roster를 선택 provider 프롬프트에 넣어 인물명과 액션아이템 담당자를 보정한다. `run-local-pipeline.sh`와 `run-remote.sh`는 노트 생성 전에 roster를 먼저 갱신한다.
+`make-notes.sh`는 이 roster를 회의록 작성 스킬 입력으로 넣어 인물명과 액션아이템 담당자를 보정한다. `run-local-pipeline.sh`와 `run-remote.sh`는 노트 생성 전에 roster를 먼저 갱신한다.
 
 ## 선택 경로: Notion DB 업로드
 
@@ -423,14 +444,18 @@ NOTION_UPLOAD_DATABASE_ID=00000000000000000000000000000000
 
 ```
 # {회의 주제 제목}
-## 요약             (3~5줄)
-## 주요 논의사항     (주제별)
-## 결정사항
-## 액션 아이템       ([ ] 담당자 — 할 일)
-## 참석자/언급 인물  (직원명단으로 확실히 특정되는 경우만)
-## 기타 메모         (인물·회사·숫자·링크)
-## 검증 완료         (`원문` → **정정** (출처))
-## 검증 필요         (웹검색해도 확정 못한 항목)
+## 1. 핵심 요약
+## 2. 주요 결정 및 방향
+## 3. 주요 논의
+## 4. Agenda Evaluation
+## 5. Previous Action Follow-up
+## 6. Action Items
+## 7. Task Handoff
+## 8. 리스크 및 확인 필요 사항
+## 9. 다음 회의에서 확인할 사항
+## 10. 참석자/언급 인물
+## 11. 검증 완료
+## 12. 검증 필요
 ```
 
 화자 분리된 로컬 전사는 A/B 역할 추론 섹션이 추가됨. Notion 전사는 화자 없이 평문.

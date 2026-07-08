@@ -136,6 +136,11 @@ exists_in_project() {
   return 1
 }
 
+filesystem_name() {
+  local name="$1"
+  printf '%s' "$name" | sed -E 's/[[:space:]]+/_/g; s/_+/_/g; s/^_//; s/_$//'
+}
+
 file_mtime_epoch() {
   local file="$1"
   stat -f %m "$file" 2>/dev/null || stat -c %Y "$file" 2>/dev/null
@@ -208,6 +213,7 @@ write_recording_list "$recording_list"
 
 while IFS= read -r -d '' file; do
   name="$(basename "$file")"
+  target_name="$(filesystem_name "$name")"
   if seen_enabled && seen_contains "$name"; then
     skipped=$((skipped + 1))
     continue
@@ -220,7 +226,7 @@ while IFS= read -r -d '' file; do
     too_new=$((too_new + 1))
     continue
   fi
-  if exists_in_project "$name"; then
+  if exists_in_project "$target_name"; then
     skipped=$((skipped + 1))
     seen_enabled && mark_seen "$name"
     continue
@@ -234,33 +240,33 @@ while IFS= read -r -d '' file; do
   fi
 
   if [ "$sub" = "unsorted" ]; then
-    if [ ! -e "$DST_BASE/unsorted/$name" ]; then
+    if [ ! -e "$DST_BASE/unsorted/$target_name" ]; then
       if [ "$DRY_RUN" -eq 1 ]; then
-        echo "dry-run copy: unsorted/$name  (label: ${label:-<none>})"
+        echo "dry-run copy: unsorted/$target_name  (source: $name, label: ${label:-<none>})"
       else
-        cp -p "$file" "$DST_BASE/unsorted/$name"
-        echo "copied: unsorted/$name  (label: ${label:-<none>})"
+        cp -p "$file" "$DST_BASE/unsorted/$target_name"
+        echo "copied: unsorted/$target_name  (source: $name, label: ${label:-<none>})"
       fi
       copied=$((copied + 1))
       unsorted=$((unsorted + 1))
     fi
     # Already in unsorted: leave it; we'll re-check the label next cycle.
-  elif [ -e "$DST_BASE/unsorted/$name" ]; then
+  elif [ -e "$DST_BASE/unsorted/$target_name" ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
-      echo "dry-run promote: unsorted/$name → $sub/$name  (label: $label)"
+      echo "dry-run promote: unsorted/$target_name → $sub/$target_name  (source: $name, label: $label)"
     else
-      mv "$DST_BASE/unsorted/$name" "$DST_BASE/$sub/$name"
-      echo "promoted: unsorted/$name → $sub/$name  (label: $label)"
+      mv "$DST_BASE/unsorted/$target_name" "$DST_BASE/$sub/$target_name"
+      echo "promoted: unsorted/$target_name → $sub/$target_name  (source: $name, label: $label)"
     fi
     promoted=$((promoted + 1))
     routed=$((routed + 1))
     seen_enabled && mark_seen "$name"
   else
     if [ "$DRY_RUN" -eq 1 ]; then
-      echo "dry-run copy: $sub/$name  (label: $label)"
+      echo "dry-run copy: $sub/$target_name  (source: $name, label: $label)"
     else
-      cp -p "$file" "$DST_BASE/$sub/$name"
-      echo "copied: $sub/$name  (label: $label)"
+      cp -p "$file" "$DST_BASE/$sub/$target_name"
+      echo "copied: $sub/$target_name  (source: $name, label: $label)"
     fi
     copied=$((copied + 1))
     routed=$((routed + 1))

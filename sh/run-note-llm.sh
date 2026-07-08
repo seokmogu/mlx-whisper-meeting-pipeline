@@ -26,7 +26,7 @@ Environment:
   CLAUDE_OAUTH_CLI          claude-oauth path override
   CLAUDE_MODEL              highest, default, opus, sonnet, or a full Claude model name
   CLAUDE_EFFORT             highest, default, low, medium, high, xhigh, or max
-  CLAUDE_TOOLS              Claude tools list (default: WebSearch)
+  CLAUDE_TOOLS              Claude available tools list (default: WebSearch; empty disables tools)
   CLAUDE_MAX_BUDGET_USD     optional Claude Code --max-budget-usd value
 
   CODEX_BIN                 codex CLI path override
@@ -340,6 +340,29 @@ other_provider() {
   esac
 }
 
+validate_note_output() {
+  local output_file="$1"
+  local first_line
+  first_line="$(awk 'NF {print; exit}' "$output_file")"
+  if [[ ! "$first_line" =~ ^#\  ]]; then
+    echo "invalid meeting note output: first non-empty line is not an H1 Markdown title" >&2
+    return 1
+  fi
+  local required=(
+    "## 1. 핵심 요약"
+    "## 6. Action Items"
+    "## 11. 검증 완료"
+    "## 12. 검증 필요"
+  )
+  local section
+  for section in "${required[@]}"; do
+    if ! grep -Fq "$section" "$output_file"; then
+      echo "invalid meeting note output: missing required section: $section" >&2
+      return 1
+    fi
+  done
+}
+
 validate_provider "$PROVIDER"
 
 prompt_file="$(mktemp)"
@@ -350,6 +373,7 @@ cat > "$prompt_file"
 
 mkdir -p "$(dirname "$OUT")"
 run_provider "$PROVIDER" "$prompt_file" "$selected_output"
+validate_note_output "$selected_output"
 cp "$selected_output" "$OUT"
 
 if truthy "$COMPARE"; then

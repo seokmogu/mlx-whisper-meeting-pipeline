@@ -1,11 +1,20 @@
 ---
 name: worxphere-meeting-minutes
-description: Use to create Korean operational meeting minutes from STT transcripts, especially Worxphere or AX/AI meetings that need agenda evaluation, previous action follow-up, action validation, task handoff, risk tracking, and person/name correction.
+description: Use to create Korean operational meeting minutes from existing STT transcripts, especially Worxphere or AX/AI meetings. If the user asks about Voice Memos/audio/downloaded .m4a, first use /Users/seokmogu/project/mlx-whisper-meeting-pipeline instead of invoking this skill directly.
 ---
 
 # Worxphere Meeting Minutes
 
 Use this skill after Korean STT transcription and before any Notion upload or meeting-context review. The output is an operational meeting record, not a short summary.
+
+## Audio Request Guardrail
+
+- If the user asks to find/check/process a Voice Memo, downloaded audio file, phone recording, `.m4a`, or "음성메모" and produce meeting notes, do not use this skill directly on raw audio.
+- Route the work through `/Users/seokmogu/project/mlx-whisper-meeting-pipeline`:
+  1. Copy external audio into `manual-audio/worxphere/` with a stable filename.
+  2. Run `./sh/run-local-pipeline.sh --only worxphere/<name>` from the pipeline repo.
+  3. Verify `transcripts/worxphere/<name>.txt`, `notes/worxphere/<name>.md`, and matching review artifacts.
+- This skill is only the note-writing contract consumed by `sh/make-notes.sh` after a transcript exists.
 
 ## Inputs
 

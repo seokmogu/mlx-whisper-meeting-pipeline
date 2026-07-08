@@ -103,11 +103,11 @@ def _already_processed(base: Path, project: str, stem: str) -> bool:
 
 
 def _parse_started_at(stem: str) -> datetime | None:
-    match = re.match(r"^(\d{8} \d{6})", stem)
+    match = re.match(r"^(\d{8})[ _](\d{6})", stem)
     if not match:
         return None
     try:
-        return datetime.strptime(match.group(1), "%Y%m%d %H%M%S")
+        return datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S")
     except ValueError:
         return None
 
@@ -343,8 +343,8 @@ def _adjacent_groups(items: list[AudioItem], merge_gap: int) -> list[list[AudioI
 def _merge_group(base: Path, group: list[AudioItem], *, dry_run: bool) -> None:
     project = group[0].project
     first = group[0]
-    last = group[-1]
-    target_name = f"{first.started_at.strftime('%Y%m%d %H%M%S') if first.started_at else first.path.stem} merged.m4a"
+    target_stem = first.started_at.strftime("%Y%m%d_%H%M%S") if first.started_at else _filesystem_stem(first.path.stem)
+    target_name = f"{target_stem}_merged.m4a"
     target = _unique_path(base / "audio" / project / target_name)
     names = ", ".join(item.path.name for item in group)
     if dry_run:
@@ -402,6 +402,10 @@ def _unique_path(path: Path) -> Path:
         if not candidate.exists():
             return candidate
     raise RuntimeError(f"cannot find unique path for {path}")
+
+
+def _filesystem_stem(value: str) -> str:
+    return re.sub(r"_+", "_", re.sub(r"\s+", "_", value)).strip("_")
 
 
 def _ffmpeg_concat_escape(path: Path) -> str:

@@ -11,6 +11,8 @@ Usage: build_employee_roster.sh [--dry-run]
 
 Builds glossary/employee_roster.tsv from the Worxphere FamilyBab employee directory.
 The output contains name, department, and position only; emails and phone numbers are not exported.
+Names absent from FamilyBab but present in wdc's (worxphere-data-collectors) notion_users.json
+identity export are appended with department only (no position, no email).
 USAGE
 }
 
@@ -39,6 +41,7 @@ fi
 LOCAL_SOURCE="${EMPLOYEE_DIRECTORY_INDEX:-$HOME/project/worxphere-internal/packages/portal-to-notion/data/familybab/index.md}"
 REMOTE_HOST="${EMPLOYEE_DIRECTORY_REMOTE_HOST:-macmini}"
 REMOTE_SOURCE="${EMPLOYEE_DIRECTORY_REMOTE_INDEX:-/Users/agent/project/worxphere-internal/packages/portal-to-notion/data/familybab/index.md}"
+WDC_USERS_SOURCE="${WDC_NOTION_USERS_PATH:-$HOME/project/worxphere-data-collectors/packages/notion-archive/archive/identity/notion_users.json}"
 OUT="$BASE/glossary/employee_roster.tsv"
 TMP_SOURCE=""
 
@@ -62,6 +65,9 @@ else
 fi
 
 args=(--source "$SOURCE" --out "$OUT")
+if [ -f "$WDC_USERS_SOURCE" ]; then
+  args+=(--wdc-users "$WDC_USERS_SOURCE")
+fi
 if [ "$DRY_RUN" -eq 1 ]; then
   args+=(--dry-run)
 fi

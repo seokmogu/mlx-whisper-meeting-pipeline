@@ -75,6 +75,11 @@ unique_target() {
   exit 1
 }
 
+filesystem_name() {
+  local name="$1"
+  printf '%s' "$name" | sed -E 's/[[:space:]]+/_/g; s/_+/_/g; s/^_//; s/_$//'
+}
+
 imported=0
 too_new=0
 missing_dirs=0
@@ -95,6 +100,7 @@ for project in "${PROJECTS[@]}"; do
 
   while IFS= read -r -d '' file; do
     name="$(basename "$file")"
+    target_name="$(filesystem_name "$name")"
     now="$(date +%s)"
     mtime="$(file_mtime_epoch "$file" || echo "$now")"
     age=$((now - mtime))
@@ -104,7 +110,7 @@ for project in "${PROJECTS[@]}"; do
       continue
     fi
 
-    target="$(unique_target "$out_dir/$name")"
+    target="$(unique_target "$out_dir/$target_name")"
     if [ "$DRY_RUN" -eq 1 ]; then
       echo "dry-run import manual audio: $project/$name -> ${target#$BASE/}"
     else

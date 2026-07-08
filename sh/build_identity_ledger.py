@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Accumulate confirmed STT-correction mappings from all past meeting notes.
+
+Each note's ``## 11. 검증 완료`` section records confirmed resolutions in the form::
+
+    - `이비타/이디따/에비타` -> **EBITDA** (근거)
+    - `성모님 / 성문님` (A 화자) → **구석모(AI Product팀, 팀장) 추정** (근거)
+
+The note LLM re-derives these every meeting because they never persist. This script
+scans every note, extracts the ``변형 → 정정`` pairs, deduplicates, counts how many
+meetings confirmed each mapping (higher = more reliable), and writes a compact ledger
+that ``make-notes.sh`` injects into the next note-generation prompt.
+
+The ledger is REFERENCE material for the LLM, not a blind find-replace table: person
+names are often estimates and some source tokens collide with real words, so the LLM
+applies each mapping only when the transcript context agrees.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+@dataclass
+class LedgerEntry:
+    variants: "OrderedDict[str, None]" = field(default_factory=OrderedDict)
+    count: int = 0
+
+# A 검증 완료 bullet: source in the first backtick pair, an arrow (-> or →), then the
+# canonical form in the first bold span.
+LEDGER_LINE_RE = re.compile(
+    r"^\s*[-*]\s*`([^`]+)`.*?(?:->|→)\s*\*\*([^*]+)\*\*",
+)
+SECTION_HEADER_RE = re.compile(r"^##\s")
+CONFIRMED_HEADER_RE = re.compile(r"^##\s*(?:[0-9]+[.]\s*)?검증\s*완료")
+# Trailing hedges/annotations we strip from the canonical target so identical
+# resolutions collapse to one key regardless of per-meeting phrasing.
+TARGET_HEDGE_RE = re.compile(r"\s*(?:추정|확인 필요|검증 필요)\s*$")
+SPEAKER_ANNOTATION_RE = re.compile(r"\s*\([^)]*화자[^)]*\)\s*")
+
+
+def iter_confirmed_lines(note_text: str):
+    in_section = False
+    for line in note_text.splitlines():
+        if SECTION_HEADER_RE.match(line):
+            in_section = bool(CONFIRMED_HEADER_RE.match(line))
+            continue
+        if in_section:
+            yield line
+
+
+def parse_variants(raw_source: str) -> list[str]:
+    cleaned = SPEAKER_ANNOTATION_RE.sub(" ", raw_source)
+    variants: list[str] = []
+    for piece in cleaned.split("/"):
+        piece = piece.strip().strip("`").strip()
+        # Drop trailing honorifics so "성모님" and "성모" collapse.
+        piece = re.sub(r"(?:님|씨)$", "", piece).strip()
+        if piece and len(piece) <= 40:
+            variants.append(piece)
+    return variants
+
+
+def normalize_target(raw_target: str) -> str:
+    target = raw_target.strip()
+    target = TARGET_HEDGE_RE.sub("", target).strip()
+    # Reject sentence-fragment targets: a clean canonical name/term never opens
+    # with a quote mark or runs to a full clause. These come from 검증 완료 lines
+    # whose arrow sits mid-sentence rather than in a proper `변형` → **정정** shape.
+    if target[:1] in {'"', "'", "“", "‘"} or len(target) > 45:
+        return ""
+    return target
+
+
+def build_ledger(notes_dir: Path) -> "OrderedDict[str, LedgerEntry]":
+    ledger: "OrderedDict[str, LedgerEntry]" = OrderedDict()
+    for note in sorted(notes_dir.rglob("*.md")):
+        try:
+            text = note.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        seen_in_note: set[tuple[str, str]] = set()
+        for line in iter_confirmed_lines(text):
+            m = LEDGER_LINE_RE.match(line)
+            if not m:
+                continue
+            target = normalize_target(m.group(2))
+            if not target:
+                continue
+            for variant in parse_variants(m.group(1)):
+                if variant == target:
+                    continue
+                key = (target, variant)
+                if key in seen_in_note:
+                    continue
+                seen_in_note.add(key)
+                entry = ledger.setdefault(target, LedgerEntry())
+                entry.variants[variant] = None
+                entry.count += 1
+    return ledger
+
+
+def render_ledger(ledger: "OrderedDict[str, LedgerEntry]", min_count: int, max_entries: int) -> str:
+    rows = [
+        (target, list(entry.variants.keys()), entry.count)
+        for target, entry in ledger.items()
+        if entry.count >= min_count
+    ]
+    # Most-confirmed first; these are the highest-confidence mappings.
+    rows.sort(key=lambda r: (-r[2], r[0]))
+    rows = rows[:max_entries]
+    if not rows:
+        return ""
+    lines = [
+        "누적 확정 표기 사전 (과거 회의록 `검증 완료`에서 축적).",
+        "형식: `STT 변형 후보` → 정정 (확정 횟수). 전사 문맥이 맞을 때만 적용하고, 애매하면 검증 필요에 남긴다.",
+        "",
+    ]
+    for target, variants, count in rows:
+        variant_str = ", ".join(variants)
+        lines.append(f"- {variant_str} → **{target}** ({count}회)")
+    return "\n".join(lines) + "\n"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("notes_dir", type=Path)
+    parser.add_argument("out_file", type=Path)
+    parser.add_argument("--min-count", type=int, default=1,
+                        help="Only include mappings confirmed in at least this many meetings.")
+    parser.add_argument("--max-entries", type=int, default=200)
+    args = parser.parse_args()
+
+    if not args.notes_dir.is_dir():
+        print(f"notes dir not found: {args.notes_dir}", file=sys.stderr)
+        return 0
+
+    ledger = build_ledger(args.notes_dir)
+    rendered = render_ledger(ledger, min_count=max(1, args.min_count), max_entries=args.max_entries)
+    args.out_file.parent.mkdir(parents=True, exist_ok=True)
+    args.out_file.write_text(rendered, encoding="utf-8")
+
+    total = sum(1 for e in ledger.values() if e.count >= max(1, args.min_count))
+    print(f"identity ledger: {total} confirmed mappings -> {args.out_file}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

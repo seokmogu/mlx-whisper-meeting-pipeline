@@ -110,6 +110,11 @@ normalize_target() {
   echo "$target"
 }
 
+review_stem() {
+  local name="$1"
+  printf '%s' "$name" | sed -E 's/[[:space:]]+/_/g; s/_+/_/g; s/^_//; s/_$//'
+}
+
 matches_only() {
   local proj="$1"
   local name="$2"
@@ -135,11 +140,19 @@ list_notes > "$before_notes"
 
 if [ "$DRY_RUN" -eq 1 ]; then
   "$BASE/sh/build_employee_roster.sh" --dry-run || echo "dry-run: employee roster refresh skipped"
+  if [ -d "$BASE/notes" ]; then
+    echo "dry-run: glossary extraction would refresh $BASE/glossary"
+    echo "dry-run: identity ledger would refresh $BASE/glossary/identity_ledger.md"
+  fi
   "$BASE/sh/sync-voice-memos.sh" --dry-run | tee "$sync_output"
   "$BASE/sh/import-manual-audio.sh" --dry-run | tee "$manual_output"
   "$BASE/sh/prepare-audio-queue.py" --dry-run | tee "$prepare_output"
 else
   "$BASE/sh/build_employee_roster.sh" || echo "employee roster refresh skipped"
+  if [ -d "$BASE/notes" ]; then
+    "$BASE/sh/extract_glossary.py" "$BASE/notes" "$BASE/glossary" || echo "glossary extraction skipped"
+    "$BASE/sh/build_identity_ledger.py" "$BASE/notes" "$BASE/glossary/identity_ledger.md" || echo "identity ledger refresh skipped"
+  fi
   "$BASE/sh/sync-voice-memos.sh"
   "$BASE/sh/import-manual-audio.sh"
   "$BASE/sh/prepare-audio-queue.py"
@@ -239,7 +252,7 @@ fi
 echo "generating meeting context reviews..."
 while IFS= read -r note; do
   [ -n "$note" ] || continue
-  stem="$(basename "$note" .md | tr ' ' '-')"
+  stem="$(review_stem "$(basename "$note" .md)")"
   out_dir="$REVIEWER_DIR/reviews/$stem"
   (
     cd "$REVIEWER_DIR"

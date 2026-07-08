@@ -118,8 +118,8 @@ emit_previous_note_context() {
 
 ---
 이전 회의록 참고자료:
-- 같은 project($proj)의 최근 회의록에서 후속 액션/결정/리스크 판단에 필요한 섹션만 발췌했다.
-- 아래 내용은 Previous Action Follow-up, 반복 이슈, 중복 액션 판단에만 사용한다.
+- 같은 project($proj)의 최근 회의록에서 후속 액션/결정/리스크 판단과 인물 연속성에 필요한 섹션만 발췌했다.
+- Previous Action Follow-up·반복 이슈·중복 액션 판단, 그리고 최근 참석자/미확정 인물 연속성에 사용한다.
 
 PREV
 
@@ -129,7 +129,7 @@ PREV
     awk -v max_lines="$max_lines" '
       BEGIN { capture = 0; count = 0 }
       /^## / {
-        capture = ($0 ~ /^## ([0-9]+[.] )?(핵심 요약|요약|주요 결정|결정사항|Agenda Evaluation|Previous Action Follow-up|Action Items|액션 아이템|Task Handoff|리스크|다음 회의)/)
+        capture = ($0 ~ /^## ([0-9]+[.] )?(핵심 요약|요약|주요 결정|결정사항|Agenda Evaluation|Previous Action Follow-up|Action Items|액션 아이템|Task Handoff|리스크|다음 회의|참석자|언급 인물|검증 필요)/)
       }
       capture && count < max_lines {
         print
@@ -210,6 +210,9 @@ for proj in "${PROJECTS[@]}"; do
 
 출력 원칙:
 - 한국어 Markdown 본문만 출력
+- stdout이 그대로 Output note 파일에 저장된다. 파일 저장/작성 완료 보고를 하지 말고 회의록 본문만 출력
+- 첫 줄은 반드시 `# {specific meeting title}` 형식의 H1이어야 함
+- `회의록을 작성했습니다`, `저장했습니다`, `확인 부탁`, `조정하겠습니다` 같은 대화형 보고 문장 금지
 - 서론/사족 금지
 - 원문 transcript 전체를 부록으로 붙이지 않음
 - 없는 정보는 만들지 말고 `확인 필요`로 표시
@@ -258,6 +261,60 @@ ROSTER
 명부:
 ROSTER
         cat "$BASE/glossary/roster.tsv"
+      fi
+      if [ -s "$BASE/glossary/glossary_prompt.txt" ] || [ -s "$BASE/glossary/glossary_hotwords.txt" ]; then
+        cat <<'GLOSSARY'
+
+---
+**용어/고유명사 보정 참고**
+- 아래 용어는 과거 회의록에서 추출한 제품명, 조직명, 프로젝트명, 인명 후보이다.
+- 전사 원문과 문맥이 맞고 과거 회의록/직원명단과 충돌하지 않을 때만 보정한다.
+- 애매하면 `검증 필요`에 남기고, 확정 보정은 `## 검증 완료`에 기록한다.
+
+GLOSSARY
+        if [ -s "$BASE/glossary/glossary_prompt.txt" ]; then
+          echo "용어 프롬프트:"
+          cat "$BASE/glossary/glossary_prompt.txt"
+        fi
+        if [ -s "$BASE/glossary/glossary_hotwords.txt" ]; then
+          echo "핫워드:"
+          cat "$BASE/glossary/glossary_hotwords.txt"
+        fi
+      fi
+      if [ -s "$BASE/glossary/identity_ledger.md" ]; then
+        cat <<'LEDGER'
+
+---
+**누적 확정 표기 사전 (최우선 참고)**
+- 아래는 과거 회의록의 `## 검증 완료`에서 축적한, 이미 확정된 STT 오인식 → 정정 매핑이다.
+- 확정 횟수가 높을수록 신뢰도가 높다. 전사 원문에 같은 변형이 나오고 문맥이 맞으면 이 정정을 우선 적용하고, 매번 처음부터 다시 추정하지 않는다.
+- 누적 사전으로 확정 가능한 이름/용어는 본문, 표, 액션아이템, 참석자/언급 인물 섹션에서 정정 표기를 사용한다. 원문 변형은 `## 11. 검증 완료`의 정정 근거로만 남긴다.
+- 누적 사전과 직원 디렉토리가 충돌하면, 회의 문맥이 누적 사전의 정정 대상과 맞는지 먼저 판단한다. 예: AI Product/거버넌스 문맥의 `성모`는 `구석모` 정정 후보로 본다.
+- 단, 화자 라벨(A/B)과 실제 인물 매칭은 이 회의 전사 문맥으로 재확인한다. 표기 사전은 "이 변형은 이 사람/용어를 뜻한다"는 사전일 뿐, 특정 화자가 누구인지까지 결정하지 않는다.
+- 확정 보정은 `## 검증 완료`에 다시 기록해 사전이 계속 누적되게 한다.
+
+LEDGER
+        cat "$BASE/glossary/identity_ledger.md"
+      fi
+      if [ "${WDC_MEETING_CONTEXT:-1}" != "0" ]; then
+        wdc_context="$BASE/state/wdc-context/$proj/$name.md"
+        if "$BASE/sh/build_wdc_meeting_context.py" "$transcript" "$wdc_context" --glossary-dir "$BASE/glossary"; then
+          if [ -s "$wdc_context" ]; then
+            cat <<'WDC_CONTEXT'
+
+---
+**WDC 전사 근거 컨텍스트**
+아래는 Worxphere Data Collectors(WDC)가 수집한 Slack/Notion/GitLab evidence index에서 생성한 짧은 snippet/metadata 참고자료이다.
+- transcript에 없는 결정, 담당자, 기한을 WDC만으로 만들지 않는다.
+- 고유명사/조직명/프로젝트명 보정과 기존 업무 연속성 판단에만 사용한다.
+- 충돌하거나 애매하면 `검증 필요`에 남긴다.
+
+WDC_CONTEXT
+            cat "$wdc_context"
+          fi
+        else
+          echo "WDC meeting context generation failed; continue without WDC context." >&2
+        fi
       fi
       cat <<'TAIL'
 

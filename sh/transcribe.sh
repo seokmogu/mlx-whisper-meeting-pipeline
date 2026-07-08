@@ -9,8 +9,14 @@ GLOSSARY_DIR="$BASE/glossary"
 VENV="$BASE/.venv"
 DIARIZATION_VENV="${DIARIZATION_VENV:-$BASE/.venv-diar-test}"
 DIARIZATION_MODEL="${DIARIZATION_MODEL:-pyannote/speaker-diarization-community-1}"
-DIARIZATION_NUM_SPEAKERS="${DIARIZATION_NUM_SPEAKERS:-2}"
+# 고정 인원수 대신 범위 힌트: 실제 회의로 검증한 결과 num_speakers를 고정하면
+# 초과 인원의 발화가 2명으로 뭉개지고, 반대로 범위를 너무 넓히면(예: 2~8) 한 사람의
+# 연속 발화가 여러 명으로 과분할된다. 2~5가 실측상 가장 안정적이었다.
+DIARIZATION_MIN_SPEAKERS="${DIARIZATION_MIN_SPEAKERS:-2}"
+DIARIZATION_MAX_SPEAKERS="${DIARIZATION_MAX_SPEAKERS:-5}"
 DIARIZATION_EXCLUSIVE="${DIARIZATION_EXCLUSIVE:-1}"
+HALLUCINATION_SILENCE_THRESHOLD="${HALLUCINATION_SILENCE_THRESHOLD:-1.5}"
+ASR_NO_SPEECH_THRESHOLD="${ASR_NO_SPEECH_THRESHOLD:-0.6}"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -106,6 +112,8 @@ for proj in "${PROJECTS[@]}"; do
       --model mlx-community/whisper-large-v3-mlx
       --language ko
       --output-dir "$TMP_DIR"
+      --hallucination-silence-threshold "$HALLUCINATION_SILENCE_THRESHOLD"
+      --no-speech-threshold "$ASR_NO_SPEECH_THRESHOLD"
     )
     [ -n "$initial_prompt" ] && mlx_args+=(--initial-prompt "$initial_prompt")
 
@@ -119,7 +127,8 @@ for proj in "${PROJECTS[@]}"; do
       "$diar_wav"
       "$diarized_json"
       --model "$DIARIZATION_MODEL"
-      --num-speakers "$DIARIZATION_NUM_SPEAKERS"
+      --min-speakers "$DIARIZATION_MIN_SPEAKERS"
+      --max-speakers "$DIARIZATION_MAX_SPEAKERS"
     )
     [ "$DIARIZATION_EXCLUSIVE" = "1" ] && diar_args+=(--exclusive)
     "$DIARIZATION_VENV/bin/python" "$BASE/sh/assign_speakers_pyannote.py" "${diar_args[@]}"

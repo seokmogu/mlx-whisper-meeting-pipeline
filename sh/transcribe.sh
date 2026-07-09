@@ -44,9 +44,7 @@ if [ -s "$GLOSSARY_DIR/glossary_prompt.txt" ]; then
 fi
 # whisperx 3.3.x는 --hotwords 미지원. 용어집은 initial_prompt로만 주입한다.
 
-set -a
-source "$BASE/.env"
-set +a
+if [ -f "$BASE/.env" ]; then set -a; source "$BASE/.env"; set +a; fi
 
 if [ -z "${HF_TOKEN:-}" ]; then
   echo "HF_TOKEN not set in $BASE/.env" >&2

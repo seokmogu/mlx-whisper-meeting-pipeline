@@ -6,9 +6,7 @@ BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 REMOTE_BASE="project/meeting-notes"
 REMOTE_DB="\$HOME/Library/Application Support/Notion/notion.db"
 
-set -a
-source "$BASE/.env"
-set +a
+if [ -f "$BASE/.env" ]; then set -a; source "$BASE/.env"; set +a; fi
 : "${REMOTE_HOST:=compute-host}"
 : "${NOTION_TARGET_PROJECT:=worxphere}"
 # Notion에서 온 전사는 .env의 NOTION_TARGET_PROJECT 서브디렉터리로 분류.

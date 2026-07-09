@@ -27,8 +27,8 @@ from pathlib import Path
 
 @dataclass
 class LedgerEntry:
-    variants: "OrderedDict[str, None]" = field(default_factory=OrderedDict)
-    count: int = 0
+    # variant -> number of distinct meetings that confirmed THAT variant.
+    variants: "OrderedDict[str, int]" = field(default_factory=OrderedDict)
 
 # A 검증 완료 bullet: source in the first backtick pair, an arrow (-> or →), then the
 # canonical form in the first bold span.
@@ -38,8 +38,9 @@ LEDGER_LINE_RE = re.compile(
 SECTION_HEADER_RE = re.compile(r"^##\s")
 CONFIRMED_HEADER_RE = re.compile(r"^##\s*(?:[0-9]+[.]\s*)?검증\s*완료")
 # Trailing hedges/annotations we strip from the canonical target so identical
-# resolutions collapse to one key regardless of per-meeting phrasing.
-TARGET_HEDGE_RE = re.compile(r"\s*(?:추정|확인 필요|검증 필요)\s*$")
+# resolutions collapse to one key regardless of per-meeting phrasing. The (?:...)+
+# wrapper collapses chained hedges like "추정 후보" in a single pass.
+TARGET_HEDGE_RE = re.compile(r"(?:\s*(?:추정|확인 필요|검증 필요|후보|가능성|잠정))+\s*$")
 SPEAKER_ANNOTATION_RE = re.compile(r"\s*\([^)]*화자[^)]*\)\s*")
 
 
@@ -99,19 +100,24 @@ def build_ledger(notes_dir: Path) -> "OrderedDict[str, LedgerEntry]":
                     continue
                 seen_in_note.add(key)
                 entry = ledger.setdefault(target, LedgerEntry())
-                entry.variants[variant] = None
-                entry.count += 1
+                # Count each variant by how many distinct meetings confirmed it,
+                # NOT by the target's aggregate variant count — otherwise a target
+                # with many spellings inflates every variant's confidence.
+                entry.variants[variant] = entry.variants.get(variant, 0) + 1
     return ledger
 
 
 def render_ledger(ledger: "OrderedDict[str, LedgerEntry]", min_count: int, max_entries: int) -> str:
+    # One row per (variant, target); each variant's count is its own meeting-confirmation
+    # count, so ranking and the downstream min-count gate are per-variant and meaningful.
     rows = [
-        (target, list(entry.variants.keys()), entry.count)
+        (variant, target, count)
         for target, entry in ledger.items()
-        if entry.count >= min_count
+        for variant, count in entry.variants.items()
+        if count >= min_count
     ]
     # Most-confirmed first; these are the highest-confidence mappings.
-    rows.sort(key=lambda r: (-r[2], r[0]))
+    rows.sort(key=lambda r: (-r[2], r[1], r[0]))
     rows = rows[:max_entries]
     if not rows:
         return ""
@@ -120,9 +126,8 @@ def render_ledger(ledger: "OrderedDict[str, LedgerEntry]", min_count: int, max_e
         "형식: `STT 변형 후보` → 정정 (확정 횟수). 전사 문맥이 맞을 때만 적용하고, 애매하면 검증 필요에 남긴다.",
         "",
     ]
-    for target, variants, count in rows:
-        variant_str = ", ".join(variants)
-        lines.append(f"- {variant_str} → **{target}** ({count}회)")
+    for variant, target, count in rows:
+        lines.append(f"- {variant} → **{target}** ({count}회)")
     return "\n".join(lines) + "\n"
 
 
@@ -144,7 +149,7 @@ def main() -> int:
     args.out_file.parent.mkdir(parents=True, exist_ok=True)
     args.out_file.write_text(rendered, encoding="utf-8")
 
-    total = sum(1 for e in ledger.values() if e.count >= max(1, args.min_count))
+    total = sum(1 for e in ledger.values() for c in e.variants.values() if c >= max(1, args.min_count))
     print(f"identity ledger: {total} confirmed mappings -> {args.out_file}", file=sys.stderr)
     return 0
 

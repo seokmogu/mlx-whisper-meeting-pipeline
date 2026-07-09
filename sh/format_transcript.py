@@ -85,13 +85,16 @@ def main():
     )
 
     speaker_map: dict[str, str] = {}
-    next_letter = iter("ABCDEFGHIJ")
 
     def label(speaker_id):
         if speaker_id is None:
             return "?"
         if speaker_id not in speaker_map:
-            speaker_map[speaker_id] = next(next_letter)
+            # A..Z for the first 26 speakers, then S27, S28, … — never runs out
+            # (the old iter("ABCDEFGHIJ") raised StopIteration past 10 speakers,
+            # crashing the whole transcript).
+            idx = len(speaker_map)
+            speaker_map[speaker_id] = chr(ord("A") + idx) if idx < 26 else f"S{idx + 1}"
         return speaker_map[speaker_id]
 
     lines = []

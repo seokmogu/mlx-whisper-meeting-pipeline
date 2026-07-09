@@ -228,7 +228,7 @@ while IFS= read -r -d '' file; do
   fi
   if exists_in_project "$target_name"; then
     skipped=$((skipped + 1))
-    seen_enabled && mark_seen "$name"
+    seen_enabled && mark_seen "$name" || true
     continue
   fi
   if [ -n "$VOICE_MEMO_FORCE_PROJECT" ] && is_project "$VOICE_MEMO_FORCE_PROJECT"; then
@@ -260,7 +260,7 @@ while IFS= read -r -d '' file; do
     fi
     promoted=$((promoted + 1))
     routed=$((routed + 1))
-    seen_enabled && mark_seen "$name"
+    seen_enabled && mark_seen "$name" || true
   else
     if [ "$DRY_RUN" -eq 1 ]; then
       echo "dry-run copy: $sub/$target_name  (source: $name, label: $label)"
@@ -270,7 +270,7 @@ while IFS= read -r -d '' file; do
     fi
     copied=$((copied + 1))
     routed=$((routed + 1))
-    seen_enabled && mark_seen "$name"
+    seen_enabled && mark_seen "$name" || true
   fi
 done < "$recording_list"
 

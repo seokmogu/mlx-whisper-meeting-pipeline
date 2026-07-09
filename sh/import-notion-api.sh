@@ -8,9 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 REMOTE_BASE="project/meeting-notes"
 
-set -a
-source "$BASE/.env"
-set +a
+if [ -f "$BASE/.env" ]; then set -a; source "$BASE/.env"; set +a; fi
 : "${REMOTE_HOST:=compute-host}"
 : "${NOTION_TOKEN:?NOTION_TOKEN not set in .env}"
 : "${NOTION_MEETING_DBS:?NOTION_MEETING_DBS not set in .env (comma-separated DB IDs)}"

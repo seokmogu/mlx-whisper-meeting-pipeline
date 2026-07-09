@@ -129,7 +129,10 @@ def _duration_seconds(path: Path) -> float | None:
 
 def _reject_reason(item: AudioItem, silence_threshold: str, min_duration: float, silence_ratio: float) -> str | None:
     if item.duration is None:
-        return None
+        # ffprobe could not read a duration — the signature of a corrupt file or a
+        # not-yet-synced iCloud placeholder. Quarantine it; otherwise it stays in the
+        # queue forever and aborts every transcribe.sh run (ffmpeg fails under set -e).
+        return "duration unavailable (ffprobe failed — corrupt or unreadable audio)"
     if item.duration < min_duration:
         return f"duration {item.duration:.1f}s is below minimum {min_duration:.1f}s"
     silent = _silence_seconds(item.path, silence_threshold)

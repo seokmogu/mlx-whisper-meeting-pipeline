@@ -8,9 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 GLOSSARY_DIR="$BASE/glossary"
 
-set -a
-source "$BASE/.env"
-set +a
+if [ -f "$BASE/.env" ]; then set -a; source "$BASE/.env"; set +a; fi
 
 : "${REMOTE_HOST:=compute-host}"
 : "${NOTION_SPACE_ID:?NOTION_SPACE_ID not set in .env}"

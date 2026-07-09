@@ -12,9 +12,7 @@ NOTES_NEW="$(mktemp)"
 
 trap 'rm -f "$NOTES_BEFORE" "$NOTES_AFTER" "$NOTES_NEW"' EXIT
 
-set -a
-source "$LOCAL_BASE/.env"
-set +a
+if [ -f "$LOCAL_BASE/.env" ]; then set -a; source "$LOCAL_BASE/.env"; set +a; fi
 read -r -a PROJECTS <<<"${MEETING_PROJECTS:-worxphere}"
 
 mkdir -p "$UPLOAD_STATE_DIR"

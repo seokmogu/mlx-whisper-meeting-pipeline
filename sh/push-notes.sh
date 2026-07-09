@@ -19,14 +19,20 @@ for proj in "${PROJECTS[@]}"; do
   [ -d "$repo/.git" ] || { echo "skip $proj: not a git repo"; continue; }
 
   cd "$repo"
-  if [ -z "$(git status --porcelain)" ]; then
-    echo "$proj: nothing to commit"
-    continue
+  # Commit any new notes (skip the commit only when the tree is already clean).
+  if [ -n "$(git status --porcelain)" ]; then
+    new_count="$(git status --porcelain | wc -l | tr -d ' ')"
+    git add -A
+    git commit -q -m "Add $new_count note(s) — $(date '+%Y-%m-%d %H:%M')"
+    echo "$proj: committed $new_count file(s)"
   fi
 
-  new_count="$(git status --porcelain | wc -l | tr -d ' ')"
-  git add -A
-  git commit -q -m "Add $new_count note(s) — $(date '+%Y-%m-%d %H:%M')"
-  git push -q origin main
-  echo "$proj: pushed $new_count file(s)"
+  # Always attempt a push so a commit stranded by a previous failed push is retried.
+  # `if git push` keeps set -e from aborting the loop, so one project's failure
+  # (network/auth/non-fast-forward) no longer skips the remaining projects.
+  if git push -q origin main; then
+    echo "$proj: pushed"
+  else
+    echo "$proj: push failed, will retry next run" >&2
+  fi
 done

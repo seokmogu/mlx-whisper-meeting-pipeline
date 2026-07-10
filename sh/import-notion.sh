@@ -1,4 +1,7 @@
 #!/bin/bash
+# DEPRECATED: superseded by import-notion-api.sh (stable public Notion API).
+# This path scrapes the Mac Notion app's local SQLite cache and is kept only as a
+# fallback for environments without API access. Prefer import-notion-api.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

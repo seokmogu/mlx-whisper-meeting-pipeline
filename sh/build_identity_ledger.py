@@ -77,13 +77,35 @@ def normalize_target(raw_target: str) -> str:
     return target
 
 
-def build_ledger(notes_dir: Path) -> "OrderedDict[str, LedgerEntry]":
+def _load_transcript(note: Path, notes_dir: Path, transcripts_dir: Path | None) -> str | None:
+    if transcripts_dir is None:
+        return None
+    try:
+        rel = note.relative_to(notes_dir).with_suffix(".txt")
+    except ValueError:
+        return None
+    path = transcripts_dir / rel
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def build_ledger(notes_dir: Path, transcripts_dir: Path | None = None) -> "OrderedDict[str, LedgerEntry]":
     ledger: "OrderedDict[str, LedgerEntry]" = OrderedDict()
     for note in sorted(notes_dir.rglob("*.md")):
         try:
             text = note.read_text(encoding="utf-8")
         except OSError:
             continue
+        # Ground each confirmation on the meeting's OWN transcript: only count a
+        # variant that actually appears in that meeting's STT output. This stops the
+        # ledger from self-reinforcing a mapping that a note merely echoed from the
+        # injected ledger/context rather than from this meeting's audio. When the
+        # transcript is missing we fall back to counting (backward compatible).
+        transcript_text = _load_transcript(note, notes_dir, transcripts_dir)
         seen_in_note: set[tuple[str, str]] = set()
         for line in iter_confirmed_lines(text):
             m = LEDGER_LINE_RE.match(line)
@@ -94,6 +116,8 @@ def build_ledger(notes_dir: Path) -> "OrderedDict[str, LedgerEntry]":
                 continue
             for variant in parse_variants(m.group(1)):
                 if variant == target:
+                    continue
+                if transcript_text is not None and variant not in transcript_text:
                     continue
                 key = (target, variant)
                 if key in seen_in_note:
@@ -138,13 +162,21 @@ def main() -> int:
     parser.add_argument("--min-count", type=int, default=1,
                         help="Only include mappings confirmed in at least this many meetings.")
     parser.add_argument("--max-entries", type=int, default=200)
+    parser.add_argument("--transcripts-dir", type=Path, default=None,
+                        help="Transcript root (mirrors notes/). Defaults to a sibling 'transcripts' dir. "
+                             "A variant is counted only if it appears in the meeting's own transcript.")
     args = parser.parse_args()
 
     if not args.notes_dir.is_dir():
         print(f"notes dir not found: {args.notes_dir}", file=sys.stderr)
         return 0
 
-    ledger = build_ledger(args.notes_dir)
+    transcripts_dir = args.transcripts_dir
+    if transcripts_dir is None:
+        sibling = args.notes_dir.parent / "transcripts"
+        transcripts_dir = sibling if sibling.is_dir() else None
+
+    ledger = build_ledger(args.notes_dir, transcripts_dir)
     rendered = render_ledger(ledger, min_count=max(1, args.min_count), max_entries=args.max_entries)
     args.out_file.parent.mkdir(parents=True, exist_ok=True)
     args.out_file.write_text(rendered, encoding="utf-8")

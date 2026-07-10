@@ -1,4 +1,8 @@
 #!/bin/bash
+# LEGACY remote orchestrator (sync -> check unprocessed -> run-remote.sh). The
+# active local flow is run-local-pipeline.sh (see AGENTS.md); this is referenced
+# only by an .example launchd plist, not by any installed job. Kept for the
+# optional remote-compute path.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

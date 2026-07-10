@@ -1,7 +1,9 @@
 #!/bin/bash
-# Dumps active workspace members from Notion's local cache into glossary/roster.tsv.
-# Uses NOTION_SPACE_ID and ROSTER_EMAIL_DOMAIN from .env.
-# Run periodically (e.g., monthly) — make-notes.sh uses this for name normalization.
+# SECONDARY: the active pipeline uses build_employee_roster.sh (FamilyBab + wdc,
+# -> glossary/employee_roster.tsv). This dumps active workspace members from
+# Notion's local cache into glossary/roster.tsv, which make-notes.sh consults only
+# as a fallback when employee_roster.tsv is absent. Uses NOTION_SPACE_ID and
+# ROSTER_EMAIL_DOMAIN from .env; run manually/periodically if you need the fallback.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

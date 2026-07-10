@@ -374,6 +374,19 @@ cat > "$prompt_file"
 mkdir -p "$(dirname "$OUT")"
 run_provider "$PROVIDER" "$prompt_file" "$selected_output"
 validate_note_output "$selected_output"
+if [ -s "$BASE/glossary/identity_ledger.md" ] && [ -x "$BASE/sh/check_identity_ledger_usage.py" ]; then
+  # Non-blocking: surface residual high-confidence variants as a warning but KEEP
+  # the note. A hard-fail here discarded the generated note (and, under a batch,
+  # aborted the run) for any meeting that legitimately quotes a confirmed 호칭 in
+  # body text — e.g. "성모로 불리는 A = 구석모". `if !` is exempt from set -e.
+  if ! "$BASE/sh/check_identity_ledger_usage.py" \
+      "$selected_output" \
+      "$BASE/glossary/identity_ledger.md" \
+      --roster "$BASE/glossary/employee_roster.tsv" \
+      --min-count "${MEETING_IDENTITY_GATE_MIN_COUNT:-7}"; then
+    echo "identity-usage check flagged residual high-confidence variants (non-blocking; note kept)" >&2
+  fi
+fi
 cp "$selected_output" "$OUT"
 
 if truthy "$COMPARE"; then

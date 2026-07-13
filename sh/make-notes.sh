@@ -296,6 +296,21 @@ GLOSSARY
 LEDGER
         cat "$BASE/glossary/identity_ledger.md"
       fi
+      if [ "${MEETING_PHONETIC_CANDIDATES:-1}" != "0" ] && [ -s "$BASE/glossary/employee_roster.tsv" ]; then
+        phon_cand="$(mktemp)"
+        if "$BASE/sh/phonetic_name_candidates.py" "$transcript" "$BASE/glossary/employee_roster.tsv" "$phon_cand" 2>/dev/null && [ -s "$phon_cand" ]; then
+          cat <<'PHON'
+
+---
+**발음 유사 인물 후보 (자모 대조 — 사전에 아직 없는 이름 보강)**
+누적 사전에 없는 새 STT 변형이라도, 발음이 가까운 사내 직원 후보를 아래에 제시한다.
+회의 문맥(팀·역할·이전 회의)과 맞을 때만 정정하고, 동명이인이거나 애매하면 `검증 필요`에 남긴다.
+
+PHON
+          cat "$phon_cand"
+        fi
+        rm -f "$phon_cand"
+      fi
       if [ "${WDC_MEETING_CONTEXT:-1}" != "0" ]; then
         wdc_context="$BASE/state/wdc-context/$proj/$name.md"
         if "$BASE/sh/build_wdc_meeting_context.py" "$transcript" "$wdc_context" --glossary-dir "$BASE/glossary"; then

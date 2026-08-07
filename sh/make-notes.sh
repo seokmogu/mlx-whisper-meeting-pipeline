@@ -5,27 +5,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 TRANSCRIPT_DIR="$BASE/transcripts"
 NOTES_DIR="$BASE/notes"
+CORRECTED_TRANSCRIPT_DIR="${MEETING_CORRECTED_TRANSCRIPT_DIR:-$BASE/state/corrected-transcripts}"
+TRANSCRIPT_CORRECTION_DIR="${MEETING_TRANSCRIPT_CORRECTION_DIR:-$BASE/state/transcript-corrections}"
 MEETING_NOTES_SKILL="${MEETING_NOTES_SKILL:-$BASE/skills/meeting-minutes/SKILL.md}"
 MEETING_PREVIOUS_NOTES_LIMIT="${MEETING_PREVIOUS_NOTES_LIMIT:-3}"
 MEETING_PREVIOUS_NOTE_MAX_LINES="${MEETING_PREVIOUS_NOTE_MAX_LINES:-160}"
+MEETING_ATTENDEES_DIR="${MEETING_ATTENDEES_DIR:-$BASE/state/meeting-attendees}"
+VOICE_MEMO_TITLE_DIR="${VOICE_MEMO_TITLE_DIR:-$BASE/state/voice-memo-titles}"
 FORCE=0
 DRY_RUN=0
 ONLY=""
-LLM_PROVIDER_OVERRIDE=""
-LLM_COMPARE_OVERRIDE=""
 
 usage() {
   cat <<'USAGE'
-Usage: make-notes.sh [--force] [--only PROJECT/NAME] [--provider claude|codex] [--compare-llm] [--dry-run]
+Usage: make-notes.sh [--force] [--only PROJECT/NAME] [--dry-run]
 
 Generates Markdown meeting notes from transcripts.
 
 Options:
   --force          Regenerate existing notes. Existing note is backed up first.
   --only TARGET    Process only NAME, PROJECT/NAME, NAME.txt, or PROJECT/NAME.txt.
-  --provider NAME  Override MEETING_LLM_PROVIDER for this run (claude or codex).
-  --compare-llm    Also run the non-selected provider and save comparison outputs under state/.
-  --no-compare-llm Disable comparison for this run.
   --dry-run        Report what would happen without calling an LLM or writing notes.
   -h, --help       Show this help.
 USAGE
@@ -39,16 +38,6 @@ while [ "$#" -gt 0 ]; do
     --only)
       ONLY="${2:?--only requires a target}"
       shift
-      ;;
-    --provider)
-      LLM_PROVIDER_OVERRIDE="${2:?--provider requires claude or codex}"
-      shift
-      ;;
-    --compare-llm)
-      LLM_COMPARE_OVERRIDE=1
-      ;;
-    --no-compare-llm)
-      LLM_COMPARE_OVERRIDE=0
       ;;
     --dry-run)
       DRY_RUN=1
@@ -108,7 +97,10 @@ emit_previous_note_context() {
 
   local tmp
   tmp="$(mktemp)"
-  find "$out_dir" -maxdepth 1 -type f -name '*.md' ! -name "$current_name.md" -print | sort | tail -n "$limit" > "$tmp"
+  find "$out_dir" -maxdepth 1 -type f -name '*.md' ! -name "$current_name.md" -print \
+    | sort \
+    | awk -v current="$current_name.md" '{ name = $0; sub(/^.*\//, "", name); if (name < current) print }' \
+    | tail -n "$limit" > "$tmp"
   if [ ! -s "$tmp" ]; then
     rm -f "$tmp"
     return 0
@@ -118,8 +110,9 @@ emit_previous_note_context() {
 
 ---
 이전 회의록 참고자료:
-- 같은 project($proj)의 최근 회의록에서 후속 액션/결정/리스크 판단과 인물 연속성에 필요한 섹션만 발췌했다.
-- Previous Action Follow-up·반복 이슈·중복 액션 판단, 그리고 최근 참석자/미확정 인물 연속성에 사용한다.
+- 같은 project($proj)의 최근 회의록에서 후속 액션/결정/리스크 판단에 필요한 섹션만 발췌했다.
+- Previous Action Follow-up·반복 이슈·중복 액션 판단에만 사용한다.
+- 이전 회의의 참석자나 화자 매핑을 현재 회의에 그대로 이어 붙이지 않는다. 현재 회의의 확정 참석자 메타데이터와 현재 녹취의 직접 호칭·3인칭 언급을 우선한다.
 
 PREV
 
@@ -129,7 +122,7 @@ PREV
     awk -v max_lines="$max_lines" '
       BEGIN { capture = 0; count = 0 }
       /^## / {
-        capture = ($0 ~ /^## ([0-9]+[.] )?(핵심 요약|요약|주요 결정|결정사항|Agenda Evaluation|Previous Action Follow-up|Action Items|액션 아이템|Task Handoff|리스크|다음 회의|참석자|언급 인물|검증 필요)/)
+        capture = ($0 ~ /^## ([0-9]+[.] )?(핵심 요약|요약|주요 결정|결정사항|Agenda Evaluation|Previous Action Follow-up|Action Items|액션 아이템|Task Handoff|리스크|다음 회의)/)
       }
       capture && count < max_lines {
         print
@@ -142,12 +135,39 @@ PREV
   rm -f "$tmp"
 }
 
-if [ -n "$LLM_PROVIDER_OVERRIDE" ]; then
-  export MEETING_LLM_PROVIDER="$LLM_PROVIDER_OVERRIDE"
-fi
-if [ -n "$LLM_COMPARE_OVERRIDE" ]; then
-  export MEETING_LLM_COMPARE="$LLM_COMPARE_OVERRIDE"
-fi
+emit_current_meeting_identity_context() {
+  local proj="$1"
+  local name="$2"
+  local attendees_file="$MEETING_ATTENDEES_DIR/$proj/$name.txt"
+  local voice_title_file="$VOICE_MEMO_TITLE_DIR/$proj/$name.txt"
+
+  if [ ! -s "$attendees_file" ] && [ ! -s "$voice_title_file" ]; then
+    return 0
+  fi
+
+  cat <<'IDENTITY'
+
+---
+**현재 회의 참석자 메타데이터 (현재 회의 화자 판정의 최우선 근거)**
+- `사용자 확정 참석자`가 있으면 현재 회의 참석자로 확정한다. 최근 회의록의 참석자·화자 매핑이나 주제 연속성이 이를 덮어쓰면 안 된다.
+- 현재 녹취에서 확정 참석자가 다른 인물을 3인칭으로 언급하면, 그 언급 인물을 현재 화자로 바꾸지 않는다.
+- 확정 참석자와 발음이 비슷하다는 이유만으로 모든 호칭을 참석자에게 합치지 않는다. `X님이`, `X님한테`, `X님 조직`처럼 문법적으로 3인칭인 호칭은 별도 언급 인물로 유지하고, 정확한 실명이 불명확하면 `확인 필요`로 남긴다.
+- 누적 표기 사전보다 현재 녹취의 직접 호칭/3인칭 문법이 우선한다. 표기 사전은 현재 회의 참석자나 화자를 결정하는 근거가 아니다.
+- Voice Memo 제목은 보조 힌트다. `참석자: 이름1, 이름2`, `이름1, 이름2 미팅`처럼 이름 목록이 명시되고 직원 디렉토리와 일치할 때만 참석자 근거로 사용한다.
+- 날짜·시간·장소·자동 생성 제목은 참석자 근거가 아니다.
+
+IDENTITY
+  if [ -s "$attendees_file" ]; then
+    printf '%s' '- 사용자 확정 참석자: '
+    tr '\n' ' ' < "$attendees_file" | sed -E 's/[[:space:]]+$//'
+    printf '\n'
+  fi
+  if [ -s "$voice_title_file" ]; then
+    printf '%s' '- Voice Memo 제목: '
+    tr '\n' ' ' < "$voice_title_file" | sed -E 's/[[:space:]]+$//'
+    printf '\n'
+  fi
+}
 
 if [ ! -f "$MEETING_NOTES_SKILL" ]; then
   echo "meeting notes skill not found: $MEETING_NOTES_SKILL" >&2
@@ -177,6 +197,23 @@ for proj in "${PROJECTS[@]}"; do
       continue
     fi
     out="$out_dir/$name.md"
+    note_transcript="$transcript"
+    correction_manifest="$TRANSCRIPT_CORRECTION_DIR/$proj/$name.json"
+    corrected_transcript="$CORRECTED_TRANSCRIPT_DIR/$proj/$name.txt"
+    if [ -s "$corrected_transcript" ] && [ -s "$correction_manifest" ]; then
+      if "$BASE/sh/apply_transcript_corrections.py" verify \
+          --raw "$transcript" \
+          --corrected "$corrected_transcript" \
+          --manifest "$correction_manifest" \
+          --quiet; then
+        note_transcript="$corrected_transcript"
+      else
+        echo "stale/invalid corrected transcript ignored: $proj/$name" >&2
+        correction_manifest=""
+      fi
+    else
+      correction_manifest=""
+    fi
 
     if [ -f "$out" ] && [ "$FORCE" -eq 0 ]; then
       skipped=$((skipped + 1))
@@ -184,6 +221,11 @@ for proj in "${PROJECTS[@]}"; do
     fi
 
     if [ "$DRY_RUN" -eq 1 ]; then
+      if [ "$note_transcript" != "$transcript" ]; then
+        echo "dry-run transcript source: verified corrected derivative ($proj/$name)"
+      else
+        echo "dry-run transcript source: raw ($proj/$name)"
+      fi
       if [ -f "$out" ] && [ "$FORCE" -eq 1 ]; then
         echo "dry-run overwrite: $proj/$name"
         overwritten=$((overwritten + 1))
@@ -228,9 +270,22 @@ PROMPT
 현재 회의 메타데이터:
 PROMPT
       echo "- Project: \`$proj\`"
-      echo "- Source transcript: \`$transcript\`"
+      echo "- Original source transcript: \`$transcript\`"
+      echo "- Transcript used for note generation: \`$note_transcript\`"
       echo "- Output note: \`$out\`"
       echo "- Generated label: \`AI 추정\`"
+      if [ -n "$correction_manifest" ]; then
+        cat <<'CORRECTION'
+
+---
+**검증된 제한 교정 transcript 사용**
+- 원본 transcript는 변경되지 않았고, 아래 accepted lexical patch만 적용된 파생본이 현재 입력이다.
+- accepted 교정은 결정·담당·기한을 새로 만드는 근거가 아니며, 이름·제품명·조직명·약어 표기 정규화에만 사용한다.
+- accepted 교정의 원문 → 정정은 `## 11. 검증 완료`에 기록한다.
+
+CORRECTION
+        "$BASE/sh/apply_transcript_corrections.py" show-accepted --manifest "$correction_manifest"
+      fi
       emit_previous_note_context "$proj" "$name" "$out_dir"
       if [ -s "$BASE/glossary/employee_roster.tsv" ]; then
         cat <<'ROSTER'
@@ -298,7 +353,7 @@ LEDGER
       fi
       if [ "${MEETING_PHONETIC_CANDIDATES:-1}" != "0" ] && [ -s "$BASE/glossary/employee_roster.tsv" ]; then
         phon_cand="$(mktemp)"
-        if "$BASE/sh/phonetic_name_candidates.py" "$transcript" "$BASE/glossary/employee_roster.tsv" "$phon_cand" 2>/dev/null && [ -s "$phon_cand" ]; then
+        if "$BASE/sh/phonetic_name_candidates.py" "$note_transcript" "$BASE/glossary/employee_roster.tsv" "$phon_cand" 2>/dev/null && [ -s "$phon_cand" ]; then
           cat <<'PHON'
 
 ---
@@ -313,7 +368,7 @@ PHON
       fi
       if [ "${WDC_MEETING_CONTEXT:-1}" != "0" ]; then
         wdc_context="$BASE/state/wdc-context/$proj/$name.md"
-        if "$BASE/sh/build_wdc_meeting_context.py" "$transcript" "$wdc_context" --glossary-dir "$BASE/glossary"; then
+        if "$BASE/sh/build_wdc_meeting_context.py" "$note_transcript" "$wdc_context" --glossary-dir "$BASE/glossary"; then
           if [ -s "$wdc_context" ]; then
             cat <<'WDC_CONTEXT'
 
@@ -331,16 +386,15 @@ WDC_CONTEXT
           echo "WDC meeting context generation failed; continue without WDC context." >&2
         fi
       fi
+      emit_current_meeting_identity_context "$proj" "$name"
       cat <<'TAIL'
 
 ---
 녹취록:
 TAIL
-      cat "$transcript"
+      cat "$note_transcript"
     } | "$BASE/sh/run-note-llm.sh" \
-        --out "$out" \
-        --project "$proj" \
-        --name "$name"
+        --out "$out"
 
     made=$((made + 1))
   done

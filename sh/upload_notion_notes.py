@@ -167,6 +167,21 @@ def parse_datetime(path: Path, content: str) -> datetime | None:
     if header:
         return datetime.strptime(header.group(1), "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
 
+    note_datetime = re.search(
+        r"(?m)^-\s*일시:\s*(\d{4}-\d{2}-\d{2})"
+        r"(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?",
+        content,
+    )
+    if note_datetime:
+        date_part = note_datetime.group(1)
+        hour = note_datetime.group(2) or "00"
+        minute = note_datetime.group(3) or "00"
+        second = note_datetime.group(4) or "00"
+        return datetime.strptime(
+            f"{date_part} {hour}:{minute}:{second}",
+            "%Y-%m-%d %H:%M:%S",
+        ).replace(tzinfo=LOCAL_TZ)
+
     stem = path.stem
     patterns = [
         (r"^notion_(\d{8})_(\d{6})_", timezone.utc),
@@ -207,13 +222,59 @@ def title_from_file(path: Path, content: str, dt: datetime | None) -> str:
 
 
 def extract_participants(content: str) -> str:
+    participants: list[str] = []
     for line in content.splitlines():
         stripped = line.strip()
-        if stripped.startswith("- 언급된 인물:") or stripped.startswith("- 인물:"):
-            return stripped.split(":", 1)[1].strip()[:2000]
-        if stripped.lower().startswith("- participants:"):
-            return stripped.split(":", 1)[1].strip()[:2000]
-    return ""
+        match = re.match(
+            r"^-\s*(?:참석자|참여자|확정 참석자(?:\([^)]*\))?|participants)\s*:\s*(.+)$",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            value = match.group(1).strip()
+            if value:
+                participants.append(value)
+    return ", ".join(dict.fromkeys(participants))[:2000]
+
+
+def parse_voice_memo_attendees(title: str) -> str:
+    value = " ".join(title.split()).strip()
+    explicit_prefix = bool(re.match(r"^참석자\s*:", value))
+    value = re.sub(r"^참석자\s*:\s*", "", value)
+    value = re.sub(r"\s+미팅\s*$", "", value)
+    names = [part.strip() for part in value.split(",") if part.strip()]
+    if not names or (not explicit_prefix and len(names) < 2):
+        return ""
+    if any(not re.fullmatch(r"[가-힣]{2,4}", name) for name in names):
+        return ""
+    return ", ".join(names)[:2000]
+
+
+def resolve_participants(path: Path, base: Path, content: str) -> str:
+    try:
+        relative = path.resolve().relative_to((base / "notes").resolve())
+    except ValueError:
+        return extract_participants(content)
+    if len(relative.parts) < 2:
+        return extract_participants(content)
+
+    project = relative.parts[0]
+    stem = path.stem
+    attendees_file = base / "state" / "meeting-attendees" / project / f"{stem}.txt"
+    if attendees_file.is_file():
+        attendees = " ".join(attendees_file.read_text(encoding="utf-8").split()).strip()
+        if attendees:
+            return attendees[:2000]
+
+    voice_title_file = base / "state" / "voice-memo-titles" / project / f"{stem}.txt"
+    if voice_title_file.is_file():
+        attendees = parse_voice_memo_attendees(
+            voice_title_file.read_text(encoding="utf-8")
+        )
+        if attendees:
+            return attendees
+
+    return extract_participants(content)
 
 
 def prop_by_type(properties: dict[str, Any], prop_type: str, preferred: list[str]) -> str | None:
@@ -232,9 +293,28 @@ def db_schema(client: Any, database_id: str) -> dict[str, str | None]:
     if database is None:
         raise RuntimeError(f"Failed to fetch Notion database: {database_id}")
     properties = database.get("properties")
+    data_source_id: str | None = None
+    if not isinstance(properties, dict):
+        data_sources = database.get("data_sources")
+        if isinstance(data_sources, list):
+            source_ids = [
+                item.get("id")
+                for item in data_sources
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            ]
+            if len(source_ids) > 1:
+                raise RuntimeError(
+                    "Notion database has multiple data sources; specify a single-source target"
+                )
+            if source_ids:
+                data_source_id = source_ids[0]
+                data_source = client.fetch_data_source(data_source_id)
+                if isinstance(data_source, dict):
+                    properties = data_source.get("properties")
     if not isinstance(properties, dict):
         raise RuntimeError("Notion database response has no properties")
     return {
+        "data_source_id": data_source_id,
         "title": prop_by_type(properties, "title", ["이름", "Name", "Title", "title"]),
         "date": prop_by_type(properties, "date", ["미팅일시", "Meeting Date", "Date", "날짜"]),
         "participants": prop_by_type(properties, "rich_text", ["참여자", "Participants"]),
@@ -242,9 +322,18 @@ def db_schema(client: Any, database_id: str) -> dict[str, str | None]:
     }
 
 
-def find_existing_page(client: Any, database_id: str, title_prop: str, title: str) -> dict[str, Any] | None:
+def find_existing_page(
+    client: Any,
+    database_id: str,
+    data_source_id: str | None,
+    title_prop: str,
+    title: str,
+) -> dict[str, Any] | None:
     payload = {"filter": {"property": title_prop, "title": {"equals": title}}}
-    rows = client.query_database(database_id, payload=payload)
+    if data_source_id:
+        rows = client.query_data_source(data_source_id, payload=payload)
+    else:
+        rows = client.query_database(database_id, payload=payload)
     if not rows:
         return None
     return rows[0]
@@ -259,12 +348,14 @@ def upload_one(
     path: Path,
     base: Path,
     database_id: str,
+    data_source_id: str | None,
     client: Any,
     writer: NotionWriter,
     schema: dict[str, str | None],
     state: dict[str, Any],
     dry_run: bool,
     upload_baseline: bool,
+    refresh_participants: bool,
 ) -> UploadResult:
     if not path.exists():
         return UploadResult(file=str(path), action="missing", reason="file does not exist")
@@ -274,7 +365,50 @@ def upload_one(
     key = relative_key(path, base)
     content_hash = sha256_file(path)
     existing_state = state["files"].get(key)
+    content = path.read_text(encoding="utf-8")
+    participants = resolve_participants(path, base, content)
+    participants_prop = schema["participants"]
+
     if isinstance(existing_state, dict) and existing_state.get("sha256") == content_hash:
+        state_page_id = str(existing_state.get("page_id", ""))
+        if (
+            refresh_participants
+            and participants
+            and participants_prop
+            and state_page_id
+            and existing_state.get("participants") != participants
+        ):
+            existing_page = client.fetch_page(state_page_id)
+            if existing_page is not None and not existing_page.get("archived"):
+                if dry_run:
+                    return UploadResult(
+                        file=key,
+                        action="would_update_participants",
+                        title=str(existing_state.get("title", "")),
+                        page_id=state_page_id,
+                        url=page_url(existing_page),
+                        reason=participants,
+                    )
+                client.update_page(
+                    state_page_id,
+                    {
+                        "properties": {
+                            participants_prop: {"rich_text": rich_text(participants)}
+                        }
+                    },
+                )
+                existing_state["participants"] = participants
+                existing_state["updated_at"] = datetime.now(timezone.utc).isoformat(
+                    timespec="seconds"
+                )
+                return UploadResult(
+                    file=key,
+                    action="updated_participants",
+                    title=str(existing_state.get("title", "")),
+                    page_id=state_page_id,
+                    url=page_url(existing_page),
+                    reason=participants,
+                )
         if existing_state.get("action") == "baseline_existing" and not upload_baseline:
             reason = "pre-existing note intentionally not backfilled"
         elif existing_state.get("action") == "baseline_existing" and upload_baseline:
@@ -291,7 +425,6 @@ def upload_one(
                 reason=reason,
             )
 
-    content = path.read_text(encoding="utf-8")
     dt = parse_datetime(path, content)
     title = title_from_file(path, content, dt)
 
@@ -307,8 +440,6 @@ def upload_one(
     if date_prop and dt is not None:
         properties[date_prop] = {"date": {"start": dt.isoformat(timespec="seconds")}}
 
-    participants_prop = schema["participants"]
-    participants = extract_participants(content)
     if participants_prop and participants:
         properties[participants_prop] = {"rich_text": rich_text(participants)}
 
@@ -347,7 +478,13 @@ def upload_one(
             }
             return UploadResult(file=key, action="updated", title=title, page_id=state_page_id, url=url)
 
-    existing_page = find_existing_page(client, database_id, title_prop, title)
+    existing_page = find_existing_page(
+        client,
+        database_id,
+        data_source_id,
+        title_prop,
+        title,
+    )
     if existing_page is not None:
         result = UploadResult(
             file=key,
@@ -372,15 +509,20 @@ def upload_one(
 
     initial_blocks = blocks[:BLOCKS_INITIAL_CREATE]
     remaining_blocks = blocks[BLOCKS_INITIAL_CREATE:]
+    parent = (
+        {"data_source_id": data_source_id}
+        if data_source_id
+        else {"database_id": database_id}
+    )
     page = client.create_page(
         {
-            "parent": {"database_id": database_id},
+            "parent": parent,
             "properties": properties,
             "children": initial_blocks,
         }
     )
     if page is None:
-        page = client.create_page({"parent": {"database_id": database_id}, "properties": properties})
+        page = client.create_page({"parent": parent, "properties": properties})
         remaining_blocks = blocks
     if page is None:
         raise RuntimeError(f"Failed to create Notion page for {key}")
@@ -416,6 +558,11 @@ def parse_args() -> argparse.Namespace:
         "--upload-baseline",
         action="store_true",
         help="Allow explicitly listed baseline_existing files to be uploaded",
+    )
+    ap.add_argument(
+        "--refresh-participants",
+        action="store_true",
+        help="Backfill the participants property from trusted per-meeting metadata",
     )
     ap.add_argument("--profile", default=os.getenv("NOTION_NATIVE_PROFILE"))
     ap.add_argument("--database-id", default=os.getenv("NOTION_UPLOAD_DATABASE_ID", ""))
@@ -480,6 +627,7 @@ def main() -> int:
     client = toolkit.require_client()
     writer = toolkit.require_writer()
     schema = db_schema(client, database_id)
+    data_source_id = schema["data_source_id"]
     state = load_state(state_path)
 
     remaining_pending: list[str] = []
@@ -492,12 +640,14 @@ def main() -> int:
                 path=path,
                 base=base,
                 database_id=database_id,
+                data_source_id=data_source_id,
                 client=client,
                 writer=writer,
                 schema=schema,
                 state=state,
                 dry_run=args.dry_run,
                 upload_baseline=args.upload_baseline,
+                refresh_participants=args.refresh_participants,
             )
         except Exception as exc:
             result = UploadResult(file=item, action="error", reason=str(exc))

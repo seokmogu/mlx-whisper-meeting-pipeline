@@ -10,7 +10,25 @@ if [ -f "$BASE/.env" ]; then
   set +a
 fi
 
-if [ -z "${NOTION_UPLOAD_DATABASE_ID:-}" ]; then
+database_id_arg=""
+expect_database_id=0
+for arg in "$@"; do
+  if [ "$expect_database_id" -eq 1 ]; then
+    database_id_arg="$arg"
+    expect_database_id=0
+    continue
+  fi
+  case "$arg" in
+    --database-id)
+      expect_database_id=1
+      ;;
+    --database-id=*)
+      database_id_arg="${arg#--database-id=}"
+      ;;
+  esac
+done
+
+if [ -z "${NOTION_UPLOAD_DATABASE_ID:-}" ] && [ -z "$database_id_arg" ]; then
   echo "NOTION_UPLOAD_DATABASE_ID not set, skip Notion upload"
   exit 0
 fi

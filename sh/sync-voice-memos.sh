@@ -70,6 +70,7 @@ VOICE_MEMO_FORCE_PROJECT="${VOICE_MEMO_FORCE_PROJECT:-}"
 VOICE_MEMO_DEFAULT_PROJECT="${VOICE_MEMO_DEFAULT_PROJECT:-}"
 VOICE_MEMO_USE_SEEN_STATE="${VOICE_MEMO_USE_SEEN_STATE:-0}"
 VOICE_MEMO_SEEN_FILE="${VOICE_MEMO_SEEN_FILE:-$BASE/state/voice-memos-seen.txt}"
+VOICE_MEMO_TITLE_DIR="${VOICE_MEMO_TITLE_DIR:-$BASE/state/voice-memo-titles}"
 
 if [ "$DRY_RUN" -eq 0 ]; then
   mkdir -p "$DST_BASE/unsorted"
@@ -139,6 +140,18 @@ exists_in_project() {
 filesystem_name() {
   local name="$1"
   printf '%s' "$name" | sed -E 's/[[:space:]]+/_/g; s/_+/_/g; s/^_//; s/_$//'
+}
+
+write_voice_memo_title() {
+  local project="$1"
+  local target_name="$2"
+  local title="$3"
+  local stem="${target_name%.m4a}"
+  [ "$DRY_RUN" -eq 0 ] || return 0
+  [ "$project" != "unsorted" ] || return 0
+  [ -n "$title" ] || return 0
+  mkdir -p "$VOICE_MEMO_TITLE_DIR/$project"
+  printf '%s\n' "$title" > "$VOICE_MEMO_TITLE_DIR/$project/$stem.txt"
 }
 
 file_mtime_epoch() {
@@ -214,6 +227,9 @@ write_recording_list "$recording_list"
 while IFS= read -r -d '' file; do
   name="$(basename "$file")"
   target_name="$(filesystem_name "$name")"
+  label="$(lookup_label "$name")"
+  sub="$(classify "$label")"
+  write_voice_memo_title "$sub" "$target_name" "$label"
   if seen_enabled && seen_contains "$name"; then
     skipped=$((skipped + 1))
     continue
@@ -231,14 +247,6 @@ while IFS= read -r -d '' file; do
     seen_enabled && mark_seen "$name" || true
     continue
   fi
-  if [ -n "$VOICE_MEMO_FORCE_PROJECT" ] && is_project "$VOICE_MEMO_FORCE_PROJECT"; then
-    label="forced:$VOICE_MEMO_FORCE_PROJECT"
-    sub="$VOICE_MEMO_FORCE_PROJECT"
-  else
-    label="$(lookup_label "$name")"
-    sub="$(classify "$label")"
-  fi
-
   if [ "$sub" = "unsorted" ]; then
     if [ ! -e "$DST_BASE/unsorted/$target_name" ]; then
       if [ "$DRY_RUN" -eq 1 ]; then

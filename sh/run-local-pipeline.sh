@@ -20,8 +20,9 @@ Runs the local Voice Memos pipeline:
   3. merge adjacent restart segments and quarantine obvious silence
   4. transcribe new audio
   5. quarantine low-content/noise transcripts
-  6. generate Markdown meeting notes
-  7. generate meeting context review artifacts
+  6. propose and deterministically validate lexical transcript corrections
+  7. generate Markdown meeting notes
+  8. generate meeting context review artifacts
 
 Options:
   --dry-run   Report what would run without copying, transcribing, writing notes, or generating reviews.
@@ -205,6 +206,16 @@ if [ "$DRY_RUN" -eq 1 ]; then
   if [ "$FORCE_NOTES" -eq 1 ]; then
     echo "dry-run: $matching_transcripts transcript file(s) would be regenerated into notes with backup"
   fi
+  if [ "${MEETING_TRANSCRIPT_CORRECTION:-1}" != "0" ]; then
+    correction_dry_args=(--dry-run)
+    [ "$FORCE_NOTES" -eq 1 ] && correction_dry_args+=(--force)
+    [ -n "$ONLY" ] && correction_dry_args+=(--only "$ONLY")
+    if [ "${#correction_dry_args[@]}" -gt 0 ]; then
+      "$BASE/sh/correct-transcripts.sh" "${correction_dry_args[@]}"
+    else
+      "$BASE/sh/correct-transcripts.sh"
+    fi
+  fi
   echo "dry-run: meeting context reviews would be generated for newly created notes"
   echo "dry-run: no audio copied, transcripts written, notes generated, or reviews generated"
   exit 0
@@ -214,6 +225,20 @@ echo "$unprocessed file(s) unprocessed, running local transcription and note gen
 if [ "$unprocessed" -gt 0 ]; then
   "$BASE/sh/transcribe.sh"
   "$BASE/sh/filter-low-content-transcripts.py"
+fi
+
+if [ "${MEETING_TRANSCRIPT_CORRECTION:-1}" != "0" ]; then
+  correction_args=()
+  [ "$FORCE_NOTES" -eq 1 ] && correction_args+=(--force)
+  [ -n "$ONLY" ] && correction_args+=(--only "$ONLY")
+  if [ "${#correction_args[@]}" -gt 0 ]; then
+    correction_command=("$BASE/sh/correct-transcripts.sh" "${correction_args[@]}")
+  else
+    correction_command=("$BASE/sh/correct-transcripts.sh")
+  fi
+  if ! "${correction_command[@]}"; then
+    echo "transcript correction stage failed; continue with verified artifact or raw transcript" >&2
+  fi
 fi
 
 make_notes_args=()

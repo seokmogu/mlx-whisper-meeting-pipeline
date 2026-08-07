@@ -18,7 +18,22 @@ DIARIZATION_EXCLUSIVE="${DIARIZATION_EXCLUSIVE:-1}"
 HALLUCINATION_SILENCE_THRESHOLD="${HALLUCINATION_SILENCE_THRESHOLD:-1.5}"
 ASR_NO_SPEECH_THRESHOLD="${ASR_NO_SPEECH_THRESHOLD:-0.6}"
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+
+cleanup_tmp_dir() {
+  [ -d "$TMP_DIR" ] || return 0
+
+  # Workspace policy forbids recursive forced deletion. Remove each generated
+  # entry by its concrete path, then remove empty directories bottom-up.
+  while IFS= read -r -d '' entry; do
+    rm -f -- "$entry"
+  done < <(find "$TMP_DIR" -depth \( -type f -o -type l -o -type p -o -type s \) -print0)
+
+  while IFS= read -r -d '' dir; do
+    rmdir -- "$dir" 2>/dev/null || true
+  done < <(find "$TMP_DIR" -depth -type d -print0)
+}
+
+trap cleanup_tmp_dir EXIT
 
 # ssh non-interactive 세션에서 Homebrew 경로가 PATH에 없을 수 있으므로 상단에서 보장.
 # ffmpeg, python 등 모든 외부 바이너리에 영향.

@@ -17,6 +17,9 @@ experiments/diarization/out/
 models/
 *.bin
 *.gguf
+*.zip
+claude-artifact-export-*/
+drafts/worxphere/
 
 # Python venv
 .venv/

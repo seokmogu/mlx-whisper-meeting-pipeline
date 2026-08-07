@@ -30,16 +30,17 @@ class LedgerEntry:
     # variant -> number of distinct meetings that confirmed THAT variant.
     variants: "OrderedDict[str, int]" = field(default_factory=OrderedDict)
 
-# A 검증 완료 bullet: source in the first backtick pair, an arrow (-> or →), then the
-# canonical form in the first bold span.
+# A 검증 완료 bullet: one or more source variants before an arrow (-> or →), then
+# the canonical form in the first bold span. Capturing the whole source side keeps
+# comma-separated forms such as `` `웍스무드`, `옥스보드` -> **Worxboard** ``.
 LEDGER_LINE_RE = re.compile(
-    r"^\s*[-*]\s*`([^`]+)`.*?(?:->|→)\s*\*\*([^*]+)\*\*",
+    r"^\s*[-*]\s*(.+?)\s*(?:->|→)\s*\*\*([^*]+)\*\*",
 )
 SECTION_HEADER_RE = re.compile(r"^##\s")
 CONFIRMED_HEADER_RE = re.compile(r"^##\s*(?:[0-9]+[.]\s*)?검증\s*완료")
-# Trailing hedges/annotations we strip from the canonical target so identical
-# resolutions collapse to one key regardless of per-meeting phrasing. The (?:...)+
-# wrapper collapses chained hedges like "추정 후보" in a single pass.
+# Trailing hedges/annotations make a target ineligible for the confirmed ledger.
+# A note can place a candidate in `검증 완료`, but `추정/후보/확인 필요` still means
+# it must not become a cross-meeting high-confidence correction.
 TARGET_HEDGE_RE = re.compile(r"(?:\s*(?:추정|확인 필요|검증 필요|후보|가능성|잠정))+\s*$")
 SPEAKER_ANNOTATION_RE = re.compile(r"\s*\([^)]*화자[^)]*\)\s*")
 
@@ -57,7 +58,7 @@ def iter_confirmed_lines(note_text: str):
 def parse_variants(raw_source: str) -> list[str]:
     cleaned = SPEAKER_ANNOTATION_RE.sub(" ", raw_source)
     variants: list[str] = []
-    for piece in cleaned.split("/"):
+    for piece in re.split(r"\s*(?:/|,|·)\s*", cleaned):
         piece = piece.strip().strip("`").strip()
         # Drop trailing honorifics so "성모님" and "성모" collapse.
         piece = re.sub(r"(?:님|씨)$", "", piece).strip()
@@ -68,7 +69,8 @@ def parse_variants(raw_source: str) -> list[str]:
 
 def normalize_target(raw_target: str) -> str:
     target = raw_target.strip()
-    target = TARGET_HEDGE_RE.sub("", target).strip()
+    if TARGET_HEDGE_RE.search(target):
+        return ""
     # Reject sentence-fragment targets: a clean canonical name/term never opens
     # with a quote mark or runs to a full clause. These come from 검증 완료 lines
     # whose arrow sits mid-sentence rather than in a proper `변형` → **정정** shape.
@@ -93,9 +95,15 @@ def _load_transcript(note: Path, notes_dir: Path, transcripts_dir: Path | None) 
         return None
 
 
-def build_ledger(notes_dir: Path, transcripts_dir: Path | None = None) -> "OrderedDict[str, LedgerEntry]":
+def build_ledger(
+    notes_dir: Path,
+    transcripts_dir: Path | None = None,
+    before_name: str | None = None,
+) -> "OrderedDict[str, LedgerEntry]":
     ledger: "OrderedDict[str, LedgerEntry]" = OrderedDict()
     for note in sorted(notes_dir.rglob("*.md")):
+        if before_name is not None and note.name >= before_name:
+            continue
         try:
             text = note.read_text(encoding="utf-8")
         except OSError:
@@ -162,6 +170,10 @@ def main() -> int:
     parser.add_argument("--min-count", type=int, default=1,
                         help="Only include mappings confirmed in at least this many meetings.")
     parser.add_argument("--max-entries", type=int, default=200)
+    parser.add_argument(
+        "--before-name",
+        help="Only use note basenames lexically earlier than this value (for rerun-safe context).",
+    )
     parser.add_argument("--transcripts-dir", type=Path, default=None,
                         help="Transcript root (mirrors notes/). Defaults to a sibling 'transcripts' dir. "
                              "A variant is counted only if it appears in the meeting's own transcript.")
@@ -176,7 +188,7 @@ def main() -> int:
         sibling = args.notes_dir.parent / "transcripts"
         transcripts_dir = sibling if sibling.is_dir() else None
 
-    ledger = build_ledger(args.notes_dir, transcripts_dir)
+    ledger = build_ledger(args.notes_dir, transcripts_dir, before_name=args.before_name)
     rendered = render_ledger(ledger, min_count=max(1, args.min_count), max_entries=args.max_entries)
     args.out_file.parent.mkdir(parents=True, exist_ok=True)
     args.out_file.write_text(rendered, encoding="utf-8")

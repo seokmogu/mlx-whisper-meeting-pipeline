@@ -8,7 +8,7 @@ Local-first meeting-notes pipeline for Korean audio. The active production path 
 
 The pipeline keeps private meeting artifacts out of git while making the processing code reusable. Each meeting project is a subdirectory under `audio/`, `transcripts/`, and `notes/`, configured by `MEETING_PROJECTS`. This MacBook is currently configured as a Worxphere-only recorder: `VOICE_MEMO_FORCE_PROJECT=worxphere` sends every local Voice Memo to `audio/worxphere/` regardless of memo title.
 
-The active loop is idempotent: sync completed Voice Memos, import manually copied phone recordings, trim/merge/quarantine audio, transcribe with `mlx-whisper`, split speakers with `pyannote`, generate Markdown with `MEETING_LLM_PROVIDER=claude|codex`, then run `meeting-context-reviewer`. Past notes and the employee roster feed the next run so transcripts and person matching improve over time.
+The active loop is idempotent: sync completed Voice Memos, import manually copied phone recordings, trim/merge/quarantine audio, transcribe with `mlx-whisper`, split speakers with `pyannote`, apply only evidence-backed lexical transcript patches with Codex, generate Markdown meeting notes with Codex, then run `meeting-context-reviewer`. The raw transcript is immutable. Past notes and the employee roster feed the next run so transcripts and person matching improve over time. Current-meeting attendee hints always take precedence over participant continuity inferred from earlier meetings.
 
 ## Quick Start
 
@@ -72,10 +72,15 @@ The uploader uses [`notion-native-toolkit`](https://github.com/seokmogu/notion-n
   transcripts/worxphere/*.txt
       │
       ▼
+  correct-transcripts.sh
+      │  - LLM은 짧은 JSON patch만 제안
+      │  - 사전·명부 근거와 숫자/부정어/변경량 guard를 통과한 patch만 적용
+      │  - 원본은 유지하고 state/corrected-transcripts/에 파생본 저장
+      ▼
   make-notes.sh
       - skills/meeting-minutes/SKILL.md를 회의록 작성 계약으로 사용
-      - 선택된 LLM provider가 전사 원문, 최근 회의록, 직원명단을 읽고 회의록을 작성
-      - Claude Code WebSearch 또는 Codex web_search + employee_roster.tsv + glossary 사용
+      - 선택된 LLM provider가 검증된 교정본(없으면 원문), 최근 회의록, 직원명단을 읽고 회의록을 작성
+      - Codex web_search + employee_roster.tsv + glossary 사용
       │
       ▼
   notes/worxphere/*.md
@@ -125,6 +130,7 @@ sync-voice-memos.sh
   - 60초보다 어린 파일은 skip
   - state/voice-memos-seen.txt에 있는 기존 파일은 skip
   - VOICE_MEMO_FORCE_PROJECT=worxphere이면 제목과 무관하게 worxphere로 복사
+  - Voice Memo 제목은 state/voice-memo-titles/<project>/<meeting>.txt에 보존해 현재 회의 참석자 보조 힌트로 사용
         ▼
 audio/worxphere/*.m4a
         ▲
@@ -147,11 +153,18 @@ filter-low-content-transcripts.py
         ▼
 transcripts/worxphere/*.txt
         ▼
+correct-transcripts.sh
+  - 원본 transcript는 수정하지 않음
+  - LLM은 인명·제품명·조직명·약어의 최소 문자열 patch만 제안
+  - 숫자·날짜·기한·부정어·긴 문장 재작성은 결정론적 검증기가 차단
+  - 검증된 파생본과 accepted/rejected 감사 내역을 state/ 아래 저장
+        ▼
 make-notes.sh
-  - MEETING_LLM_PROVIDER=claude|codex
-  - Claude Code WebSearch 또는 Codex web_search
+  - Codex CLI로 회의록 생성
+  - Codex web_search
   - glossary + employee_roster.tsv 주입
   - 원본 transcript 파일을 덮어쓰지 않고, 보정 결과를 notes/<project>/*.md에 반영
+  - state/meeting-attendees/<project>/<meeting>.txt의 사용자 확정 참석자는 직전 회의 참석자·화자 연속성보다 우선
         ▼
 notes/worxphere/*.md
         ▼
@@ -176,7 +189,9 @@ meeting-context-reviewer
 | trim 전 원본 | `state/audio-originals/<project>/` | 앞/뒤 비발화 구간 trim 전 원본 보관 |
 | 중단 후 재녹음 merge 원본 | `state/audio-segments/<project>/` | merge 후 원본 segment 보관 |
 | 잡음/무음 격리 | `state/rejected-audio/<project>/`, `state/rejected-transcripts/<project>/` | 자동 삭제하지 않고 격리 |
-| 전사 결과 | `transcripts/<project>/*.txt` | 화자 분리 반영 |
+| 원본 전사 결과 | `transcripts/<project>/*.txt` | 화자 분리 반영, 후속 단계에서 절대 덮어쓰지 않음 |
+| 검증된 교정본 | `state/corrected-transcripts/<project>/*.txt` | accepted lexical patch만 적용한 회의록 입력 파생본 |
+| 교정 감사 내역 | `state/transcript-corrections/<project>/*.json` | 제안·수락·거절·근거·원본/교정본 SHA-256 |
 | 회의록 | `notes/<project>/*.md` | Markdown 산출물 |
 | 리뷰 결과 | `../meeting-context-reviewer/reviews/<meeting-id>/` | reviewer repo의 로컬 산출물 |
 | 기존 녹음 baseline | `state/voice-memos-seen.txt` | 자동화 활성화 전 과거 녹음 backfill 방지 |
@@ -265,10 +280,7 @@ cp .env.example .env
 #   NOTION_SPACE_ID          — (선택, build_roster.sh용)
 #   ROSTER_EMAIL_DOMAIN      — (선택, build_roster.sh용)
 #   REMOTE_HOST              — (선택) run-remote.sh를 쓸 때만 필요한 SSH alias
-#   MEETING_LLM_PROVIDER     — claude 또는 codex
-#   MEETING_LLM_COMPARE      — 1이면 Claude/Codex 결과를 둘 다 저장
 #   MEETING_NOTES_SKILL      — 회의록 작성 SKILL.md 경로
-#   CLAUDE_MODEL             — (선택) Claude Code --model 값
 #   CODEX_MODEL              — (선택) Codex --model 값
 
 # launchd로 Voice Memos 자동 감지 트리거:
@@ -277,22 +289,19 @@ cp .env.example .env
 # /bin/bash, /usr/bin/find에 Full Disk Access 권한 부여 필요
 ```
 
-### LLM provider 설정
+### Codex LLM 설정
 
-회의록 생성 LLM은 `sh/run-note-llm.sh`가 담당한다. 기본값은 기존 동작과 같은 `MEETING_LLM_PROVIDER=claude`이며, 공유 가능한 설정은 `.env`에 둔다.
+전사문 제한 교정과 회의록 생성은 `sh/run-note-llm.sh`를 통해 Codex CLI가 담당한다. 공유 가능한 설정은 `.env`에 둔다.
 
 | 변수 | 기본/예시 | 의미 |
 |---|---|---|
-| `MEETING_LLM_PROVIDER` | `claude` | 실제 `notes/<project>/*.md`를 쓰는 provider. `claude` 또는 `codex` |
-| `MEETING_LLM_COMPARE` | `0` | `1`이면 선택 provider 결과와 반대 provider 결과를 `state/llm-comparisons/<project>/<meeting>/`에 저장 |
 | `MEETING_NOTES_SKILL` | `skills/meeting-minutes/SKILL.md` | 회의록 작성 규칙의 source of truth |
 | `MEETING_PREVIOUS_NOTES_LIMIT` | `3` | 같은 project의 최근 회의록 몇 개를 후속 액션 판단에 주입할지 |
 | `MEETING_PREVIOUS_NOTE_MAX_LINES` | `160` | 이전 회의록 1개당 발췌 최대 줄 수 |
-| `CLAUDE_OAUTH_RUN` | PATH 또는 `~/.local/bin/claude-oauth-run` | Claude Code OAuth wrapper 경로 override |
-| `CLAUDE_OAUTH_CLI` | PATH 또는 `~/.local/bin/claude-oauth` | OAuth token 조회 CLI 경로 override |
-| `CLAUDE_MODEL` | `highest` | `highest`는 Claude Code의 `opus` alias로 해석된다. `default`/빈 값은 Claude Code 프로파일 기본 모델 사용 |
-| `CLAUDE_EFFORT` | `highest` | `highest`는 Claude Code `--effort max`로 해석된다 |
-| `CLAUDE_TOOLS` | `WebSearch` | Claude Code에 허용할 도구 |
+| `MEETING_TRANSCRIPT_CORRECTION` | `1` | 근거 기반 lexical transcript 교정 단계 활성화. `0`이면 원본을 바로 회의록 입력으로 사용 |
+| `MEETING_TRANSCRIPT_CORRECTION_MIN_CONFIDENCE` | `0.92` | 이 값 미만의 LLM 제안은 자동 거절 |
+| `MEETING_TRANSCRIPT_CORRECTION_PERSON_LEDGER_MIN_COUNT` | `5` | 누적 사전 인물 매핑을 자동 적용하기 위한 최소 과거 확정 횟수 |
+| `MEETING_TRANSCRIPT_CORRECTION_MAX_EDIT_RATIO` | `0.05` | 교정본에서 허용하는 원본 대비 최대 변경 비율 |
 | `CODEX_BIN` | PATH의 `codex` | Codex CLI 경로 override |
 | `CODEX_MODEL` | `frontier` | `frontier`는 실행 시점의 `OMX_DEFAULT_FRONTIER_MODEL`, 없으면 `~/.codex/config.toml`의 `model`로 해석된다 |
 | `CODEX_REASONING_EFFORT` | `highest` | `highest`는 Codex `model_reasoning_effort="xhigh"`로 해석된다 |
@@ -300,41 +309,16 @@ cp .env.example .env
 | `CODEX_SANDBOX` | `read-only` | Codex가 실행될 sandbox |
 | `CODEX_APPROVAL_POLICY` | `never` | 비대화형 실행 중 사용자 승인 요청 금지 |
 
-현재 이 MacBook에서 확인한 상태는 다음과 같다.
-
-- Claude Code 인증: `claude-oauth print-token`으로 OAuth token을 가져와 `CLAUDE_CODE_OAUTH_TOKEN`으로 주입한다. `ANTHROPIC_*` API key 환경변수는 호출 시 제거해 OAuth 경로를 강제한다.
-- Claude 모델/effort: 공유/재현성을 위해 `.env`에서 `CLAUDE_MODEL=highest`, `CLAUDE_EFFORT=highest`를 사용한다. 스크립트가 이를 Claude Code의 `opus` alias와 `--effort max`로 바꿔 넘기므로 Claude 쪽 최신 Opus 라인과 최고 effort를 따른다. 더 낮은 비용/속도가 필요하면 `sonnet`/`high`, 도구 기본값을 쓰려면 `default`로 바꾼다.
-- Codex 인증/모델/effort: `.env`에서 `CODEX_MODEL=frontier`, `CODEX_REASONING_EFFORT=highest`를 사용한다. 스크립트가 실행 시점의 `OMX_DEFAULT_FRONTIER_MODEL` 또는 `~/.codex/config.toml` 기본 모델을 읽고, effort는 `xhigh`로 넘긴다.
+현재 이 MacBook에서는 `.env`의 `CODEX_MODEL=frontier`, `CODEX_REASONING_EFFORT=highest`를 사용한다. 스크립트가 실행 시점의 `OMX_DEFAULT_FRONTIER_MODEL` 또는 `~/.codex/config.toml` 기본 모델을 읽고, effort는 `xhigh`로 넘긴다.
 - 최고 모델/effort는 품질 우선 설정이라 단일 짧은 테스트 transcript도 수 분 걸릴 수 있다. 자동 실행은 lock으로 중복 실행을 막지만, 회의 직후 산출 지연은 감수해야 한다.
 
-단일 provider 실행:
+단일 회의록 생성:
 
 ```bash
-MEETING_LLM_PROVIDER=claude ./sh/make-notes.sh --force --only "worxphere/20260528 150348"
-MEETING_LLM_PROVIDER=codex ./sh/make-notes.sh --force --only "worxphere/20260528 150348"
+./sh/make-notes.sh --force --only "worxphere/20260528 150348"
 ```
 
-Claude/Codex 비교 실행:
-
-```bash
-MEETING_LLM_PROVIDER=claude MEETING_LLM_COMPARE=1 \
-  ./sh/make-notes.sh --force --only "worxphere/20260528 150348"
-```
-
-이 경우 실제 회의록은 선택 provider 결과로 저장되고, 두 provider 결과는 `state/llm-comparisons/worxphere/20260528 150348/claude.md`, `codex.md`에 저장된다. 자동으로 더 나은 결과를 판단하지는 않는다. 품질 판단까지 자동화하려면 별도 judge 단계가 필요하다.
-
-### Claude Code CLI 확인
-
-`make-notes.sh`는 Claude Code를 직접 호출하지 않고 `claude-oauth-run` wrapper를 통해 비대화형으로 실행한다. 현재 이 MacBook에서는 다음 조건을 확인했다.
-
-```bash
-command -v claude-oauth-run
-claude-oauth-run --version
-claude-oauth print-token 2>/dev/null | wc -c
-printf 'OK만 출력해' | claude-oauth-run --dangerously-skip-permissions -p --tools "" --max-budget-usd 0.50
-```
-
-성공 기준은 실행 파일 경로가 출력되고, version이 출력되고, token 길이가 0보다 크고, 마지막 명령이 `OK`를 출력하는 것이다. `make-notes.sh`는 `CLAUDE_OAUTH_RUN`이 설정돼 있으면 그 경로를 쓰고, 없으면 PATH와 `~/.local/bin/claude-oauth-run` 순서로 찾는다.
+`make-notes.sh`는 현재 회의보다 파일명 시각이 앞선 회의록만 이전 회의 컨텍스트로 사용한다. 재실행 시 나중 날짜 회의가 과거 컨텍스트로 역유입되지 않으며, 이전 참석자/화자 매핑은 현재 회의에 승계하지 않는다.
 
 ### Codex CLI 확인
 
@@ -357,7 +341,7 @@ printf 'OK만 출력해' | codex --ask-for-approval never --sandbox read-only \
 # 별도: HuggingFace에서 pyannote gated 모델 약관을 계정별 1회 수락
 #   https://huggingface.co/pyannote/segmentation-3.0
 #   https://huggingface.co/pyannote/speaker-diarization-community-1
-# 별도: 선택한 note LLM CLI 설치 (claude-oauth-run 또는 codex)
+# 별도: Codex CLI 설치
 ```
 
 ### Notion 스페이스 ID 확인 (build_roster.sh용)
@@ -387,9 +371,11 @@ sqlite3 ~/Library/Application\ Support/Notion/notion.db "SELECT id, name FROM sp
 
 ### Voice Memos 자동화
 
-로컬 자동화 entrypoint는 `run-local-pipeline.sh`이다. 이 경로는 Voice Memos sync → local transcription → Markdown note → meeting-context-reviewer 산출물까지만 수행한다. Notion 업로드와 Git push는 실행하지 않는다.
+로컬 자동화 entrypoint는 `run-local-pipeline.sh`이다. 이 경로는 Voice Memos sync → local transcription → 제한 교정 파생본 → Markdown note → meeting-context-reviewer 산출물까지만 수행한다. Notion 업로드와 Git push는 실행하지 않는다.
 
-LLM 전사 보정은 `transcribe.sh`가 아니라 `make-notes.sh`에서 수행한다. `transcribe.sh`는 Whisper/pyannote 결과를 `transcripts/<project>/*.txt`로 남기고, `make-notes.sh`가 그 원본을 `skills/meeting-minutes/SKILL.md`와 함께 `sh/run-note-llm.sh`에 넘긴다. 선택된 provider(`MEETING_LLM_PROVIDER=claude|codex`)는 스킬 계약, 웹검색 도구, glossary, 직원명단, 최근 같은 project 회의록 발췌를 사용해 이름·제품명·회사명·액션아이템 담당자·이전 액션 후속 상태를 보정한다. 이 보정 결과는 `notes/<project>/*.md`에 들어가며, 원본 transcript 파일은 감사/재처리를 위해 유지한다.
+`transcribe.sh`는 Whisper/pyannote 결과를 원본 `transcripts/<project>/*.txt`로 남긴다. 이어서 `correct-transcripts.sh`가 검색 도구와 이전 회의 본문 없이 현재 참석자, 직원명단, 누적 확정 사전만 사용해 lexical JSON patch를 제안받는다. 누적 사전도 같은 project에서 현재 회의보다 파일명 시각이 앞선 회의만으로 새로 만들어, 재실행 시 현재/미래 회의의 판단이 역유입되거나 자기 확정되는 것을 막는다. `apply_transcript_corrections.py`는 타임스탬프·화자·줄 순서 보존, 정확한 원문 부분 일치, 사전/명부 근거, 신뢰도, 숫자·부정어·기한 보호, 줄별/전체 변경량 제한을 검사한다. 통과한 patch만 `state/corrected-transcripts/`에 적용하고 모든 거절 사유를 manifest에 남긴다. `make-notes.sh`는 원본/교정본 SHA-256 검증이 성공한 경우에만 교정본을 사용하며, 실패하거나 기능이 꺼져 있으면 원본으로 fail-open 한다.
+
+교정 단계는 문장 다듬기나 요약을 하지 않는다. 긴 훼손 구간, 일반 문법, 조사, 반복 발화는 그대로 유지하고 인명·제품명·조직명·약어의 최소 문자열만 다룬다. 원본 transcript는 감사와 재처리를 위해 항상 유지된다.
 
 회의록 작성 스킬은 Samko `voice_note_whisper`의 운영 회의록 방식에 맞춰 짧은 요약 대신 다음 구조를 기본으로 한다.
 Codex에서 직접 이 스킬을 호출할 수 있게 하려면 `./sh/install-meeting-skill.sh`를 실행한다. 설치 대상은 기본적으로 `~/.codex/skills/worxphere-meeting-minutes`이고, 파이프라인은 repo 안의 같은 `SKILL.md`를 source of truth로 읽는다.
@@ -410,8 +396,8 @@ Codex에서 직접 이 스킬을 호출할 수 있게 하려면 `./sh/install-me
 ./sh/run-local-pipeline.sh --dry-run
 ./sh/run-local-pipeline.sh
 ./sh/run-local-pipeline.sh --force-notes --only "worxphere/20260528 150348"
-./sh/make-notes.sh --provider codex --force --only "worxphere/20260528 150348"
-./sh/make-notes.sh --provider claude --compare-llm --force --only "worxphere/20260528 150348"
+./sh/correct-transcripts.sh --force --only "worxphere/20260528 150348"
+./sh/make-notes.sh --force --only "worxphere/20260528 150348"
 ```
 
 기존 회의록을 다시 만들 때는 `--force-notes`를 사용한다. 기존 `.md`는 덮어쓰기 전에 `state/note-backups/<project>/<timestamp>/` 아래로 백업된다. `--only`는 `NAME`, `PROJECT/NAME`, `NAME.md`, `PROJECT/NAME.md` 형식을 받는다.
@@ -429,7 +415,18 @@ launchd로 켜려면 관리 스크립트를 사용한다. `install`은 현재 Vo
 
 파일명은 공백 없이 생성한다. Voice Memo 원본이나 수동 import 파일명에 공백이 있으면 파이프라인 입력 시 `_`로 정규화한다. 예: `20260609 140803 PD X Nika 미팅.m4a` → `20260609_140803_PD_X_Nika_미팅.m4a`.
 
-녹음 직후 파일이 아직 쓰이는 중일 수 있어 `sync-voice-memos.sh`는 기본 60초보다 어린 `.m4a` 파일을 건너뛴다. 필요하면 `.env`에서 `VOICE_MEMO_MIN_AGE_SECONDS`로 조정한다. 현재 운영값은 `VOICE_MEMO_FORCE_PROJECT=worxphere`라서 Voice Memos 제목은 라우팅에 영향을 주지 않는다.
+녹음 직후 파일이 아직 쓰이는 중일 수 있어 `sync-voice-memos.sh`는 기본 60초보다 어린 `.m4a` 파일을 건너뛴다. 필요하면 `.env`에서 `VOICE_MEMO_MIN_AGE_SECONDS`로 조정한다. 현재 운영값은 `VOICE_MEMO_FORCE_PROJECT=worxphere`라서 Voice Memos 제목은 라우팅에 영향을 주지 않지만, 제목 자체는 `state/voice-memo-titles/`에 보존한다. 제목을 `정승호, 구석모 미팅` 또는 `참석자: 정승호, 구석모`처럼 작성하면 현재 회의 화자 판정의 보조 근거가 된다. 날짜·시간·장소 제목은 참석자 근거로 사용하지 않는다.
+
+Notion 업로드 시에도 같은 제목 메타데이터와 `state/meeting-attendees/`의 확정 참석자를 사용해 `참여자` 속성을 채운다. 이미 업로드된 페이지의 빈 참여자 속성은 `upload-notion-notes.sh --refresh-participants`로 본문을 다시 쓰지 않고 보정할 수 있다.
+
+참석자가 확정된 회의를 재처리할 때는 전용 메타데이터를 먼저 저장한다. 이 값은 직전 회의의 참석자·화자 매핑보다 우선한다.
+
+```bash
+./sh/set-meeting-attendees.sh \
+  --meeting "worxphere/20260715_160933" \
+  --attendees "구석모, 고병삼, 정승호"
+./sh/run-local-pipeline.sh --force-notes --only "worxphere/20260715_160933"
+```
 
 폰으로 녹음한 파일을 Mac으로 복사하는 예외 상황에서는 `manual-audio/worxphere/` 아래에 `.m4a` 파일을 넣는다. 다음 로컬 파이프라인 실행 때 `import-manual-audio.sh`가 이 파일을 `audio/worxphere/`로 이동시킨 뒤 기존 전사/회의록 생성 흐름에 태운다.
 
@@ -488,5 +485,4 @@ NOTION_UPLOAD_DATABASE_ID=00000000000000000000000000000000
 - `notion.db`는 Notion 데스크톱 앱의 로컬 캐시로 내부 구현 디테일. 스키마가 앱 업데이트로 바뀔 수 있음
 - `run-local-pipeline.sh`와 `run-remote.sh` 각 단계는 idempotent — 이미 생성된 노트/전사는 스킵
 - 화자 분리는 `pyannote/speaker-diarization-community-1`의 exclusive diarization을 사용. `pyannote.audio` 4.x가 필요하므로 `mlx-whisper` venv와 분리된 `.venv-diar-test`에서 실행
-- LLM 호출은 `sh/run-note-llm.sh`가 담당한다. Claude는 `claude-oauth-run --dangerously-skip-permissions -p --tools WebSearch`, Codex는 `codex --ask-for-approval never --sandbox read-only exec ...` 형태로 비대화형 실행한다.
-- 대규모 배치/비교 모드는 API 비용에 주의한다. `MEETING_LLM_COMPARE=1`은 provider를 두 번 호출한다.
+- LLM 호출은 `sh/run-note-llm.sh`가 담당하며, Codex를 `codex --ask-for-approval never --sandbox read-only exec ...` 형태로 비대화형 실행한다.

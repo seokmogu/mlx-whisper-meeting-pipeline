@@ -163,6 +163,13 @@ def render_ledger(ledger: "OrderedDict[str, LedgerEntry]", min_count: int, max_e
     return "\n".join(lines) + "\n"
 
 
+def write_if_changed(path: Path, content: str) -> bool:
+    if path.is_file() and path.read_text(encoding="utf-8") == content:
+        return False
+    path.write_text(content, encoding="utf-8")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("notes_dir", type=Path)
@@ -191,10 +198,11 @@ def main() -> int:
     ledger = build_ledger(args.notes_dir, transcripts_dir, before_name=args.before_name)
     rendered = render_ledger(ledger, min_count=max(1, args.min_count), max_entries=args.max_entries)
     args.out_file.parent.mkdir(parents=True, exist_ok=True)
-    args.out_file.write_text(rendered, encoding="utf-8")
+    changed = write_if_changed(args.out_file, rendered)
 
     total = sum(1 for e in ledger.values() for c in e.variants.values() if c >= max(1, args.min_count))
-    print(f"identity ledger: {total} confirmed mappings -> {args.out_file}", file=sys.stderr)
+    action = "updated" if changed else "unchanged"
+    print(f"identity ledger: {total} confirmed mappings ({action}) -> {args.out_file}", file=sys.stderr)
     return 0
 
 

@@ -228,7 +228,7 @@ Voice Memos를 중단했다가 바로 다시 녹음하면 macOS는 별도 `.m4a`
    선택된 LLM provider가 전사 오류로 의심되는 고유명사를 웹검색 도구로 검증 후 정정 → `## 검증 완료`에 `원문 → 정정 (근거)` 형태로 기록.
 
 3. **이름 정규화** (로스터 + 회의록 작성 스킬)
-   직원 명부(`build_employee_roster.sh` → familybab + wdc `notion_users.json`, 매일 갱신)와
+   직원 명부(`build_employee_roster.sh` → FamilyBab 재직 스냅샷 + WDC `notion_users.json` 보강 + 로컬 이력 원장)와
    **누적 확정 사전**(`build_identity_ledger.py`), **자모 음성유사도 후보**(`phonetic_name_candidates.py`)를
    노트 프롬프트에 함께 주입. "성모/성문/성원" 같은 전사 변이를 `구석모` 하나로 수렴.
 
@@ -364,7 +364,7 @@ sqlite3 ~/Library/Application\ Support/Notion/notion.db "SELECT id, name FROM sp
 | Notion 전사 임포트 (API) | `./sh/import-notion-api.sh [YYYY-MM-DD]` | 필요 시 |
 | Notion 전사 임포트 (notion.db) | `./sh/import-notion.sh [YYYY-MM-DD]` | 필요 시 (대안 경로) |
 | 원격 컴퓨트 선택 실행 | `./sh/run-remote.sh` | 현재 자동 플로우 아님 |
-| 직원명단 roster 갱신 | `./sh/build_employee_roster.sh` | 노트 생성 전 자동, 필요 시 수동 |
+| 직원명단 roster 갱신 | `./sh/build_employee_roster.sh` | 파이프라인 시작/노트 생성 완료 후 자동, 필요 시 수동 |
 | 멤버 명부 갱신 | `./sh/build_roster.sh` | 월 1회 |
 
 `import-notion-api.sh`/`import-notion.sh`의 선택 인자는 `--since` 날짜. 생략 시 전체 임포트.
@@ -434,9 +434,13 @@ Notion 업로드 시에도 같은 제목 메타데이터와 `state/meeting-atten
 
 ### 직원명단 기반 이름 정규화
 
-`build_employee_roster.sh`는 Worxphere 포털의 FamilyBab 직원 디렉토리 산출물에서 회의 처리용 roster를 만든다. 기본 입력은 `~/project/worxphere-internal/packages/portal-to-notion/data/familybab/index.md`이며, 로컬에 없으면 `EMPLOYEE_DIRECTORY_REMOTE_HOST`(기본 `macmini`)의 `/Users/agent/project/worxphere-internal/packages/portal-to-notion/data/familybab/index.md`를 읽는다.
+`build_employee_roster.sh`는 Worxphere 포털의 FamilyBab 직원 디렉토리 산출물에서 회의 처리용 identity roster를 만든다. 목적은 현재 참석자 명단을 만드는 것이 아니라, 다음 전사·회의록에서 인명과 소속을 정확히 식별하면서 과거 회의에 등장한 퇴사자도 잃지 않는 것이다. 기본 입력은 `~/project/worxphere-internal/packages/portal-to-notion/data/familybab/index.md`이며, 원천이 36시간보다 오래되면 `EMPLOYEE_DIRECTORY_REMOTE_HOST`(기본 `macmini`)의 최신 산출물을 최대 1시간에 한 번 확인한다. 맥미니가 닿지 않거나 원격 파일도 오래됐으면 맥북에서 기존 `familybab_sync.sh collect`를 실행한다. 이 fallback은 포털 조회와 로컬 스냅샷 생성만 하며 Notion deploy는 실행하지 않는다.
 
-출력은 `glossary/employee_roster.tsv`이고, 회의 처리에 필요한 `이름 / 소속팀 / 직책`만 포함한다. 이메일, 전화번호, 사번은 내보내지 않는다.
+출력은 `glossary/employee_roster.tsv`이고 `이름 / 소속팀 / 직책 / 재직상태 / 마지막 재직 확인일 / 출처`만 포함한다. 내부 병합은 정규화한 회사 이메일을 기본 식별자로 사용하며 `@jobkorea.co.kr`와 `@worxphere.ai`의 동일 local-part를 같은 사람으로 연결한다. 이메일이 없거나 별칭이 다를 때만 동명이인이 없는 이름을 보조 조건으로 사용한다. 원문 이메일, 전화번호, 사번과 내부 identity key는 glossary에 내보내지 않는다. 신선한 FamilyBab 스냅샷에 있으면 `active`, 이전 스냅샷에는 있었지만 최신 스냅샷에서 사라지면 삭제하지 않고 `former`, WDC 사용자 목록에만 있거나 원천이 오래되면 `unverified`로 구분한다. WDC 목록만으로 퇴사자를 재직자로 되돌리지 않는다.
+
+상태 이력은 `state/employee-roster/history.json`, 마지막 점검 근거는 `state/employee-roster/status.json`에 남는다. `source_origin`, `remote_refresh_result`, `local_fallback_result`로 실제 사용 원천과 fallback 결과를 구분할 수 있다. 최초 원장 생성 시에는 더 오래된 로컬 FamilyBab 스냅샷을 역사 자료로 먼저 읽고 최신 스냅샷에서 사라진 사람을 `former`로 복원한다. 원격·맥북 수집이 모두 실패하면 기존 상태를 보존하며 누구도 새로 퇴사 처리하지 않는다. 내용이 같으면 roster·용어집·누적 표기 사전 파일을 다시 쓰지 않아 수정 시각이 실제 의미 변경을 나타내게 한다.
+
+맥북 fallback이 실제 수집하려면 `~/project/worxphere-internal/packages/portal-to-notion/.local/session.json`이 유효해야 한다. 세션이 만료되면 수집은 실패 안전하게 종료되고 `state/employee-roster/local-fallback.log`에 원인을 남긴다. 브라우저 세션을 이 파일로 갱신하는 작업은 별도의 자격증명 처리이므로 자동 수행하지 않는다.
 
 ```bash
 ./sh/build_employee_roster.sh --dry-run

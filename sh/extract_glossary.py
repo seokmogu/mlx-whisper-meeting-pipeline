@@ -13,6 +13,13 @@ from pathlib import Path
 from collections import OrderedDict
 
 
+def write_if_changed(path: Path, content: str) -> bool:
+    if path.is_file() and path.read_text(encoding="utf-8") == content:
+        return False
+    path.write_text(content, encoding="utf-8")
+    return True
+
+
 def section(text: str, header: str) -> str:
     pattern = rf"##\s*{re.escape(header)}\s*\n(.*?)(?=\n##|\Z)"
     m = re.search(pattern, text, re.DOTALL)
@@ -87,17 +94,14 @@ def main() -> None:
     prompt_path = out_dir / "glossary_prompt.txt"
     hotwords_path = out_dir / "glossary_hotwords.txt"
 
-    if terms:
-        limited = terms[:80]
-        prompt_path.write_text(
-            "회의에서 자주 언급되는 고유명사: " + ", ".join(limited) + ".\n"
-        )
-        hotwords_path.write_text(", ".join(limited) + "\n")
-    else:
-        prompt_path.write_text("")
-        hotwords_path.write_text("")
+    limited = terms[:80]
+    prompt = "회의에서 자주 언급되는 고유명사: " + ", ".join(limited) + ".\n" if terms else ""
+    hotwords = ", ".join(limited) + "\n" if terms else ""
+    prompt_changed = write_if_changed(prompt_path, prompt)
+    hotwords_changed = write_if_changed(hotwords_path, hotwords)
 
-    print(f"extracted {len(terms)} terms", file=sys.stderr)
+    action = "updated" if prompt_changed or hotwords_changed else "unchanged"
+    print(f"extracted {len(terms)} terms ({action})", file=sys.stderr)
     print(f"  -> {prompt_path}", file=sys.stderr)
     print(f"  -> {hotwords_path}", file=sys.stderr)
 

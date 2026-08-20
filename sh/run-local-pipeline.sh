@@ -137,23 +137,33 @@ list_matching_notes() {
   done | sort
 }
 
-list_notes > "$before_notes"
-
-if [ "$DRY_RUN" -eq 1 ]; then
-  "$BASE/sh/build_employee_roster.sh" --dry-run || echo "dry-run: employee roster refresh skipped"
-  if [ -d "$BASE/notes" ]; then
-    echo "dry-run: glossary extraction would refresh $BASE/glossary"
-    echo "dry-run: identity ledger would refresh $BASE/glossary/identity_ledger.md"
+refresh_meeting_identity_context() {
+  local mode="${1:-write}"
+  if [ "$mode" = "dry-run" ]; then
+    "$BASE/sh/build_employee_roster.sh" --dry-run || echo "dry-run: employee roster refresh skipped"
+    if [ -d "$BASE/notes" ]; then
+      echo "dry-run: glossary extraction would refresh changed outputs under $BASE/glossary"
+      echo "dry-run: identity ledger would refresh changed output $BASE/glossary/identity_ledger.md"
+    fi
+    return 0
   fi
-  "$BASE/sh/sync-voice-memos.sh" --dry-run | tee "$sync_output"
-  "$BASE/sh/import-manual-audio.sh" --dry-run | tee "$manual_output"
-  "$BASE/sh/prepare-audio-queue.py" --dry-run | tee "$prepare_output"
-else
+
   "$BASE/sh/build_employee_roster.sh" || echo "employee roster refresh skipped"
   if [ -d "$BASE/notes" ]; then
     "$BASE/sh/extract_glossary.py" "$BASE/notes" "$BASE/glossary" || echo "glossary extraction skipped"
     "$BASE/sh/build_identity_ledger.py" "$BASE/notes" "$BASE/glossary/identity_ledger.md" || echo "identity ledger refresh skipped"
   fi
+}
+
+list_notes > "$before_notes"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  refresh_meeting_identity_context dry-run
+  "$BASE/sh/sync-voice-memos.sh" --dry-run | tee "$sync_output"
+  "$BASE/sh/import-manual-audio.sh" --dry-run | tee "$manual_output"
+  "$BASE/sh/prepare-audio-queue.py" --dry-run | tee "$prepare_output"
+else
+  refresh_meeting_identity_context
   "$BASE/sh/sync-voice-memos.sh"
   "$BASE/sh/import-manual-audio.sh"
   "$BASE/sh/prepare-audio-queue.py"
@@ -268,6 +278,9 @@ if [ ! -s "$review_targets" ]; then
   echo "no new notes generated"
   exit 0
 fi
+
+echo "refreshing meeting identity context with newly completed notes..."
+refresh_meeting_identity_context
 
 if [ ! -d "$REVIEWER_DIR" ]; then
   echo "meeting-context-reviewer not found: $REVIEWER_DIR"

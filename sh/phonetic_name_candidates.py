@@ -76,8 +76,8 @@ def given_name(full: str) -> str:
     return full
 
 
-def load_roster(path: Path) -> list[tuple[str, str, str]]:
-    rows: list[tuple[str, str, str]] = []
+def load_roster(path: Path) -> list[tuple[str, str, str, str]]:
+    rows: list[tuple[str, str, str, str]] = []
     if not path.is_file():
         return rows
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -87,8 +87,9 @@ def load_roster(path: Path) -> list[tuple[str, str, str]]:
         name = parts[0].strip()
         dept = parts[1].strip() if len(parts) > 1 else ""
         pos = parts[2].strip() if len(parts) > 2 else ""
+        status = parts[3].strip() if len(parts) > 3 else "unverified"
         if name and HANGUL_TOKEN_RE.fullmatch(name):
-            rows.append((name, dept, pos))
+            rows.append((name, dept, pos, status))
     return rows
 
 
@@ -105,14 +106,14 @@ def extract_tokens(transcript: str) -> "dict[str, bool]":
     return tokens
 
 
-def best_matches(token: str, roster: list[tuple[str, str, str]], *, threshold: float, top: int):
+def best_matches(token: str, roster: list[tuple[str, str, str, str]], *, threshold: float, top: int):
     scored = []
-    for name, dept, pos in roster:
+    for name, dept, pos, status in roster:
         if token == name:
             continue  # already correct, no correction needed
         sim = max(jamo_similarity(token, name), jamo_similarity(token, given_name(name)))
         if sim >= threshold:
-            scored.append((sim, name, dept, pos))
+            scored.append((sim, name, dept, pos, status))
     scored.sort(key=lambda x: (-x[0], x[1]))
     return scored[:top]
 
@@ -151,9 +152,10 @@ def main() -> int:
             continue
         # Skip tokens that exactly equal a roster name already (handled in best_matches),
         # and de-dupe identical candidate rows.
+        labels = {"former": " · 퇴사", "unverified": " · 재직 미확인"}
         cand = ", ".join(
-            f"{name}({dept}{', ' + pos if pos else ''}) 유사도 {sim:.2f}"
-            for sim, name, dept, pos in matches
+            f"{name}({dept}{', ' + pos if pos else ''}{labels.get(status, '')}) 유사도 {sim:.2f}"
+            for sim, name, dept, pos, status in matches
         )
         key = f"{token}=>{cand}"
         if key in seen:
@@ -171,8 +173,11 @@ def main() -> int:
 
     header = [
         "발음 유사 인물 후보 (자모 기반, 로스터 대조).",
-        "STT가 이름을 뭉갰을 때 발음이 가장 가까운 사내 직원 후보다. **문맥이 맞을 때만** 정정하고,"
-        " 애매하면 `검증 필요`에 남긴다. 자동 치환이 아니라 후보 제시일 뿐이다.",
+        "STT가 이름을 뭉갰을 때 발음이 가장 가까운 사내 직원 후보다. "
+        "**문맥이 맞을 때만** 정정하고, 애매하면 `검증 필요`에 남긴다. "
+        "자동 치환이 아니라 후보 제시일 뿐이다.",
+        "`퇴사`는 과거/언급 인물 식별에만 사용하고 현재 참석자·소속·담당의 "
+        "근거로 사용하지 않는다.",
         "",
     ]
     args.output.write_text("\n".join(header + lines) + "\n", encoding="utf-8")

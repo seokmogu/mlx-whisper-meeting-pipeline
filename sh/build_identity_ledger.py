@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Accumulate confirmed STT-correction mappings from all past meeting notes.
 
-Each note's ``## 11. 검증 완료`` section records confirmed resolutions in the form::
+Each note's ``검증 완료`` section records confirmed resolutions in the form::
 
     - `이비타/이디따/에비타` -> **EBITDA** (근거)
     - `성모님 / 성문님` (A 화자) → **구석모(AI Product팀, 팀장) 추정** (근거)
@@ -36,8 +36,10 @@ class LedgerEntry:
 LEDGER_LINE_RE = re.compile(
     r"^\s*[-*]\s*(.+?)\s*(?:->|→)\s*\*\*([^*]+)\*\*",
 )
-SECTION_HEADER_RE = re.compile(r"^##\s")
-CONFIRMED_HEADER_RE = re.compile(r"^##\s*(?:[0-9]+[.]\s*)?검증\s*완료")
+SECTION_HEADER_RE = re.compile(r"^#{2,3}\s")
+CONFIRMED_HEADER_RE = re.compile(
+    r"^#{2,3}\s*(?:[0-9]+(?:[.][0-9]+)*[.]?\s*)?검증\s*완료"
+)
 # Trailing hedges/annotations make a target ineligible for the confirmed ledger.
 # A note can place a candidate in `검증 완료`, but `추정/후보/확인 필요` still means
 # it must not become a cross-meeting high-confidence correction.

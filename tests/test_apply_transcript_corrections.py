@@ -13,6 +13,8 @@ from apply_transcript_corrections import (  # noqa: E402
     apply_corrections,
 )
 from build_identity_ledger import build_ledger, parse_variants  # noqa: E402
+from check_identity_ledger_usage import IdentityMapping, iter_body_issues  # noqa: E402
+from extract_glossary import extract_terms  # noqa: E402
 
 
 class TranscriptCorrectionPolicyTest(unittest.TestCase):
@@ -265,6 +267,48 @@ class TranscriptCorrectionPolicyTest(unittest.TestCase):
                 before_name="20260715_160933.md",
             )
             self.assertEqual(ledger["Worxboard"].variants["옥스보드"], 1)
+
+    def test_ledger_reads_new_appendix_subsection(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            notes = root / "notes"
+            transcripts = root / "transcripts"
+            notes.mkdir()
+            transcripts.mkdir()
+            name = "20260818_100000"
+            (notes / f"{name}.md").write_text(
+                "## 5. 참석자·용어 검증 부록\n"
+                "### 5.2 검증 완료\n"
+                "- `옥스보드` -> **Worxboard** (근거)\n"
+                "### 5.3 검증 필요\n- 해당 없음\n",
+                encoding="utf-8",
+            )
+            (transcripts / f"{name}.txt").write_text("옥스보드\n", encoding="utf-8")
+            ledger = build_ledger(notes, transcripts)
+            self.assertEqual(ledger["Worxboard"].variants["옥스보드"], 1)
+
+    def test_glossary_reads_new_appendix_subsections(self):
+        terms = extract_terms(
+            "## 5. 참석자·용어 검증 부록\n"
+            "### 5.2 검증 완료\n"
+            "- `옥스보드` → **Worxboard** (근거)\n"
+            "### 5.3 검증 필요\n"
+            "- `클로도` → **Claude** 확인 필요\n"
+        )
+        self.assertIn("Worxboard", terms)
+        self.assertIn("Claude", terms)
+
+    def test_identity_usage_skips_new_completed_verification_subsection(self):
+        mapping = IdentityMapping(variant="성모", target="구석모", count=7)
+        note = (
+            "## 5. 참석자·용어 검증 부록\n"
+            "### 5.2 검증 완료\n"
+            "- `성모` → **구석모** (근거)\n"
+            "### 5.3 검증 필요\n- 해당 없음\n"
+        )
+        self.assertEqual([], list(iter_body_issues(note, [mapping])))
 
 
 if __name__ == "__main__":

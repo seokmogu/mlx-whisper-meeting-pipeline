@@ -1,0 +1,4 @@
+interface:
+  display_name: "Worxphere 회의록"
+  short_description: "전사본에서 간결한 운영 회의록과 검증 증적 작성"
+  default_prompt: "Use $worxphere-meeting-minutes to turn this Korean transcript into a concise, evidence-backed operational meeting note."

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "visibility",
+    "target_data_source_id",
+    "page_id",
+    "url",
+    "title",
+    "post_fetch_verified",
+    "fetched_markdown",
+    "message"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["preflight", "created", "updated", "skipped", "held", "error"]
+    },
+    "visibility": {
+      "type": "string",
+      "enum": ["private", "public"]
+    },
+    "target_data_source_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "page_id": {
+      "type": "string"
+    },
+    "url": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "post_fetch_verified": {
+      "type": "boolean"
+    },
+    "fetched_markdown": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    }
+  }
+}

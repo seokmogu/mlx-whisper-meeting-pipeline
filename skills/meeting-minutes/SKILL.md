@@ -20,6 +20,8 @@ Create an operational record after transcription and before any Notion upload or
 - Optional employee roster: `name<TAB>department<TAB>position`.
 - Optional runtime context: whether web search is actually available.
 
+Before drafting Korean prose, read `references/korean-naturalness.md` completely and apply it during the first draft. It is the meeting-specific adaptation of the installed `humanize-korean` quick rules.
+
 ## Non-negotiable rules
 
 - Output only Korean Markdown. Do not add conversational prefaces or completion messages.
@@ -32,6 +34,7 @@ Create an operational record after transcription and before any Notion upload or
 - Do not repeat the same decision or action across the reader and evidence layers. Refer to an action by its ID when needed.
 - Keep `### 5.1 참석자/언급 인물` visibly expanded. Do not hide identity evidence in a collapsed section.
 - Give each topic one semantic home: conclusion, action, unresolved decision, evidence, or verification appendix. Other sections may reference its ID or `§4.x`, but must not restate it.
+- Do not create `## 6. 객관 명제 팩트체크` during meeting-note authoring. The pipeline appends that section in a separate privacy-safe, source-cited web-verification step after this five-section draft passes validation.
 
 ## Workflow
 
@@ -65,6 +68,7 @@ Create an operational record after transcription and before any Notion upload or
 
 ## Korean writing rules
 
+- Apply `references/korean-naturalness.md` during initial drafting, not as a broad after-the-fact rewrite.
 - Lead with the outcome, then add the evidence or condition.
 - Keep one main claim per sentence. Split a sentence when stacked clauses make it hard to scan.
 - Prefer concrete subjects and verbs over abstract nominalizations.
@@ -74,11 +78,11 @@ Create an operational record after transcription and before any Notion upload or
 - Preserve established technical terms such as GPT, AI, GWS, Notion, Slack, Skill, MCP, API, LLM, input/output, and ROI.
 - Preserve business-relevant numeric examples in the evidence layer. Do not drop a baseline, target, duration, team count, cost, or document size merely to shorten the note.
 - Do not use inline code in sections 1–4. Use ordinary text or Korean quotation marks for program names, common words, durations, and numbers. Reserve inline code for literal STT fragments in the verification appendix.
-- Do not run a broad second-pass rewrite over the evidence layer. If a separate language-polishing step is requested, limit it to `## 1. 핵심 결론 및 결정사항` and revalidate protected facts afterward.
+- Do not run an unrestricted second-pass rewrite. A validator-guided repair may change only the prose that triggered a named naturalness rule while preserving protected facts, IDs, metadata, action fields, and verification literals.
 
 ## Output contract
 
-Use exactly these five H2 sections. Sections 1–3 are the reader layer; sections 4–5 are the evidence layer.
+Use exactly these five authoring H2 sections. Sections 1–3 are the reader layer; sections 4–5 are the evidence layer. A separate pipeline-owned fact-checker may append `## 6. 객관 명제 팩트체크` after this draft; never fabricate that section inside the meeting-writing turn.
 
 ```markdown
 # {specific meeting title}
@@ -153,6 +157,9 @@ Do not use Markdown or Notion tables for decisions, actions, previous actions, o
 - Use the employee roster only when the match is strong and context-compatible.
 - Render a unique, context-compatible match as `이름(소속팀, 직책)` when useful.
 - Keep the spoken form and add `검증 필요` when multiple people match or role context is weak.
+- In `### 5.1 참석자/언급 인물`, put user-confirmed attendees on one compact `사용자 확정 참석자:` line whenever possible. Separate mentioned people below it.
+- Do not repeat `직원 디렉토리에서 active로 확인됨`, roster provenance, or the same attendance proof for every person. Add individual evidence only when it resolves a duplicate name or another real ambiguity.
+- Confirmed attendance does not prove a speaker-label mapping. Do not attach a person's likely statements merely because they attended; keep speaker mapping separate and `확인 필요` when unresolved.
 - Do not output email, phone number, employee ID, or unnecessary personal data.
 - Use web search only when it is available and actually used. Never claim a search that did not occur.
 
@@ -178,4 +185,6 @@ Do not use Markdown or Notion tables for decisions, actions, previous actions, o
 - Confirm that material baselines, targets, durations, counts, costs, and document sizes remain represented in the evidence layer.
 - Confirm that `검증 완료` contains no numeric or date-fragment rewrites.
 - Confirm that completed and pending verification items do not overlap.
-- Confirm that exactly five H2 sections and all appendix subsections exist, and `Task Handoff` does not exist.
+- Confirm that user-confirmed attendees are complete, compact, and separate from mentioned people without repeated roster boilerplate or inferred speaker attribution.
+- Confirm that the meeting-specific Korean naturalness checks pass: no repeated bilingual product naming, no four-bullet reporting-verb run, and no formulaic reporting verb dominating the evidence layer.
+- Confirm that exactly five authoring H2 sections and all appendix subsections exist, and `Task Handoff` does not exist. Treat a later pipeline-owned `## 6. 객관 명제 팩트체크` as a separate derived verification section.

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "candidates"],
+  "properties": {
+    "version": {"type": "integer", "const": 1},
+    "candidates": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "speaker", "start_seconds", "end_seconds", "claim_text", "public_claim", "required_evidence", "checkability", "importance", "stt_risk", "web_search_allowed", "counterpart_claims"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^C[1-9][0-9]*$"},
+          "speaker": {"type": "string", "minLength": 1},
+          "start_seconds": {"type": "number", "minimum": 0},
+          "end_seconds": {"type": "number", "minimum": 0},
+          "claim_text": {"type": "string", "minLength": 1, "maxLength": 600},
+          "public_claim": {"type": "string", "maxLength": 500},
+          "required_evidence": {"type": "string", "maxLength": 500},
+          "checkability": {"enum": ["deterministic", "public_web", "internal_authority", "speaker_conflict"]},
+          "importance": {"enum": ["high", "medium"]},
+          "stt_risk": {"type": "boolean"},
+          "web_search_allowed": {"type": "boolean"},
+          "counterpart_claims": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["speaker", "start_seconds", "claim_text"],
+              "properties": {
+                "speaker": {"type": "string", "minLength": 1},
+                "start_seconds": {"type": "number", "minimum": 0},
+                "claim_text": {"type": "string", "minLength": 1, "maxLength": 600}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

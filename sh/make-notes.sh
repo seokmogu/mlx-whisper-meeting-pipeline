@@ -4,27 +4,34 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 TRANSCRIPT_DIR="$BASE/transcripts"
-NOTES_DIR="$BASE/notes"
+NOTES_DIR="${MEETING_NOTES_OUTPUT_ROOT:-$BASE/notes}"
 CORRECTED_TRANSCRIPT_DIR="${MEETING_CORRECTED_TRANSCRIPT_DIR:-$BASE/state/corrected-transcripts}"
 TRANSCRIPT_CORRECTION_DIR="${MEETING_TRANSCRIPT_CORRECTION_DIR:-$BASE/state/transcript-corrections}"
 MEETING_NOTES_SKILL="${MEETING_NOTES_SKILL:-$BASE/skills/meeting-minutes/SKILL.md}"
+MEETING_KOREAN_NATURALNESS_RULES="${MEETING_KOREAN_NATURALNESS_RULES:-$BASE/skills/meeting-minutes/references/korean-naturalness.md}"
 MEETING_PREVIOUS_NOTES_LIMIT="${MEETING_PREVIOUS_NOTES_LIMIT:-3}"
 MEETING_PREVIOUS_NOTE_MAX_LINES="${MEETING_PREVIOUS_NOTE_MAX_LINES:-160}"
 MEETING_ATTENDEES_DIR="${MEETING_ATTENDEES_DIR:-$BASE/state/meeting-attendees}"
+MEETING_ATTENDEE_IDENTITIES_FILE="${MEETING_ATTENDEE_IDENTITIES_FILE:-$BASE/state/meeting-attendee-identities.tsv}"
 VOICE_MEMO_TITLE_DIR="${VOICE_MEMO_TITLE_DIR:-$BASE/state/voice-memo-titles}"
+MEETING_FACT_CHECK="${MEETING_FACT_CHECK:-1}"
+MEETING_FACT_CHECK_RUNNER="${MEETING_FACT_CHECK_RUNNER:-$BASE/sh/run-meeting-fact-check.sh}"
+MEETING_FACT_CHECK_DIR="${MEETING_FACT_CHECK_DIR:-}"
 FORCE=0
 DRY_RUN=0
 ONLY=""
 
 usage() {
   cat <<'USAGE'
-Usage: make-notes.sh [--force] [--only PROJECT/NAME] [--dry-run]
+Usage: make-notes.sh [--force] [--only PROJECT/NAME] [--output-root DIR] [--dry-run]
 
 Generates Markdown meeting notes from transcripts.
 
 Options:
   --force          Regenerate existing notes. Existing note is backed up first.
   --only TARGET    Process only NAME, PROJECT/NAME, NAME.txt, or PROJECT/NAME.txt.
+  --output-root DIR
+                   Write notes below DIR/<project>/ instead of the canonical notes/ tree.
   --dry-run        Report what would happen without calling an LLM or writing notes.
   -h, --help       Show this help.
 USAGE
@@ -37,6 +44,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --only)
       ONLY="${2:?--only requires a target}"
+      shift
+      ;;
+    --output-root)
+      NOTES_DIR="${2:?--output-root requires a directory}"
       shift
       ;;
     --dry-run)
@@ -54,6 +65,18 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+case "$NOTES_DIR" in
+  /*) ;;
+  *) NOTES_DIR="$BASE/$NOTES_DIR" ;;
+esac
+if [ -z "$MEETING_FACT_CHECK_DIR" ]; then
+  if [ "$NOTES_DIR" = "$BASE/notes" ]; then
+    MEETING_FACT_CHECK_DIR="$BASE/state/fact-checks"
+  else
+    MEETING_FACT_CHECK_DIR="$(dirname "$NOTES_DIR")/state/fact-checks"
+  fi
+fi
 
 normalize_target() {
   local target="$1"
@@ -97,7 +120,11 @@ emit_previous_note_context() {
 
   local tmp
   tmp="$(mktemp)"
-  find "$out_dir" -maxdepth 1 -type f -name '*.md' ! -name "$current_name.md" -print \
+  find "$out_dir" -maxdepth 1 -type f -name '*.md' \
+    ! -name "$current_name.md" \
+    ! -name '*_readable.md' \
+    ! -name '*_notion-readable.md' \
+    -print \
     | sort \
     | awk -v current="$current_name.md" '{ name = $0; sub(/^.*\//, "", name); if (name < current) print }' \
     | tail -n "$limit" > "$tmp"
@@ -111,7 +138,7 @@ emit_previous_note_context() {
 ---
 이전 회의록 참고자료:
 - 같은 project($proj)의 최근 회의록에서 후속 액션/결정/리스크 판단에 필요한 섹션만 발췌했다.
-- Previous Action Follow-up·반복 이슈·중복 액션 판단에만 사용한다.
+- 이전 액션 변화·반복 이슈·중복 액션 판단에만 사용한다.
 - 이전 회의의 참석자나 화자 매핑을 현재 회의에 그대로 이어 붙이지 않는다. 현재 회의의 확정 참석자 메타데이터와 현재 녹취의 직접 호칭·3인칭 언급을 우선한다.
 
 PREV
@@ -122,7 +149,7 @@ PREV
     awk -v max_lines="$max_lines" '
       BEGIN { capture = 0; count = 0 }
       /^## / {
-        capture = ($0 ~ /^## ([0-9]+[.] )?(핵심 요약|요약|주요 결정|결정사항|Agenda Evaluation|Previous Action Follow-up|Action Items|액션 아이템|Task Handoff|리스크|다음 회의)/)
+        capture = ($0 ~ /^## ([0-9]+[.] )?(핵심 결론 및 결정사항|미결 쟁점 및 다음 결정|한눈에 보기|핵심 요약|요약|주요 결정|결정사항|Agenda Evaluation|Previous Action Follow-up|이전 액션 변화|Action Items|액션 아이템|Task Handoff|차단|리스크|다음 회의)/)
       }
       capture && count < max_lines {
         print
@@ -158,9 +185,10 @@ emit_current_meeting_identity_context() {
 
 IDENTITY
   if [ -s "$attendees_file" ]; then
-    printf '%s' '- 사용자 확정 참석자: '
-    tr '\n' ' ' < "$attendees_file" | sed -E 's/[[:space:]]+$//'
-    printf '\n'
+    "$BASE/sh/render_meeting_attendee_context.py" \
+      --attendees "$attendees_file" \
+      --identities "$MEETING_ATTENDEE_IDENTITIES_FILE" \
+      --markdown
   fi
   if [ -s "$voice_title_file" ]; then
     printf '%s' '- Voice Memo 제목: '
@@ -173,9 +201,16 @@ if [ ! -f "$MEETING_NOTES_SKILL" ]; then
   echo "meeting notes skill not found: $MEETING_NOTES_SKILL" >&2
   exit 1
 fi
+if [ ! -f "$MEETING_KOREAN_NATURALNESS_RULES" ]; then
+  echo "meeting Korean naturalness rules not found: $MEETING_KOREAN_NATURALNESS_RULES" >&2
+  exit 1
+fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "dry-run skill: $MEETING_NOTES_SKILL"
+  echo "dry-run Korean naturalness rules: $MEETING_KOREAN_NATURALNESS_RULES"
+  echo "dry-run objective fact check: $MEETING_FACT_CHECK"
+  echo "dry-run objective fact-check state: $MEETING_FACT_CHECK_DIR"
 fi
 
 read -r -a PROJECTS <<<"${MEETING_PROJECTS:-worxphere}"
@@ -258,12 +293,22 @@ for proj in "${PROJECTS[@]}"; do
 - 서론/사족 금지
 - 원문 transcript 전체를 부록으로 붙이지 않음
 - 없는 정보는 만들지 말고 `확인 필요`로 표시
-- 회의가 45분 이상이고 내용이 충분하면 짧은 요약 노트로 압축하지 말고 상세 운영 회의록으로 작성
+- 회의가 45분 이상이고 내용이 충분하면 증적 영역은 상세히 유지하되 `핵심 결론 및 결정사항`은 최대 7개 항목·1,400자 이내로 작성하고, 독립된 결론이 적으면 억지로 채우지 않음
+- `Action Items`만 액션의 단일 원본으로 사용하고 별도 `Task Handoff` 섹션을 만들지 않음
+- 액션은 표가 아니라 체크박스로 쓰고, 결과물 중심 제목 아래에 `담당 범위 · 기한 · §4.x` 한 줄만 둠. 반복 필드 라벨은 쓰지 않음
+- 결론·액션·미결·근거·검증을 서로 다른 단일 위치에 두고, 다른 섹션에서는 ID 또는 `§4.x`만 참조
+- `## 6. 객관 명제 팩트체크`는 후속 전용 단계가 생성하므로 이 초안에서는 만들지 않음
 
 ---
 사용할 회의록 작성 스킬:
 PROMPT
       cat "$MEETING_NOTES_SKILL"
+      cat <<'PROMPT'
+
+---
+회의록 최초 작성에 적용할 한국어 자연스러움 규칙:
+PROMPT
+      cat "$MEETING_KOREAN_NATURALNESS_RULES"
       cat <<'PROMPT'
 
 ---
@@ -281,7 +326,7 @@ PROMPT
 **검증된 제한 교정 transcript 사용**
 - 원본 transcript는 변경되지 않았고, 아래 accepted lexical patch만 적용된 파생본이 현재 입력이다.
 - accepted 교정은 결정·담당·기한을 새로 만드는 근거가 아니며, 이름·제품명·조직명·약어 표기 정규화에만 사용한다.
-- accepted 교정의 원문 → 정정은 `## 11. 검증 완료`에 기록한다.
+- accepted 교정의 원문 → 정정은 `### 5.2 검증 완료`에 기록한다.
 
 CORRECTION
         "$BASE/sh/apply_transcript_corrections.py" show-accepted --manifest "$correction_manifest"
@@ -300,7 +345,7 @@ CORRECTION
 - `unverified`는 이름 후보로만 사용하고 현재 재직 여부를 단정하지 않음
 - 액션 아이템 담당자는 명시 발화가 있을 때만 직원명으로 작성. 회의 흐름상 추정되는 사람은 담당자로 만들지 않음
 - 이메일, 전화번호, 사번은 출력하지 않음
-- 정정 시 `## 검증 완료`에 `"민수님" → **김민수(Product팀, PO)**` 형식으로 기록
+- 정정 시 `### 5.2 검증 완료`에 `"민수님" → **김민수(Product팀, PO)**` 형식으로 기록
 
 직원 디렉토리:
 ROSTER
@@ -312,7 +357,7 @@ ROSTER
 **이름 정규화 — 워크스페이스 멤버 명부**
 형식: `이름<TAB>이메일`. 전사의 "~님" 호칭이나 짧은 이름을 이 명부와 매칭해 풀네임으로 정정.
 - 호칭에서 "님" 제거 → 명부의 이름(대개 `_` 앞부분)과 유사도 비교 → 일치 확실할 때만 대체
-- 정정 시 `## 검증 완료`에 `"민수님" → **김민수_제품팀**` 형식으로 기록
+- 정정 시 `### 5.2 검증 완료`에 `"민수님" → **김민수_제품팀**` 형식으로 기록
 - 명부에 없거나 동명이인/매칭 불확실 → 원문 유지
 - 명부는 참고용이므로 매칭이 애매하면 임의 추정 금지
 
@@ -346,10 +391,10 @@ GLOSSARY
 **누적 확정 표기 사전 (최우선 참고)**
 - 아래는 과거 회의록의 `## 검증 완료`에서 축적한, 이미 확정된 STT 오인식 → 정정 매핑이다.
 - 확정 횟수가 높을수록 신뢰도가 높다. 전사 원문에 같은 변형이 나오고 문맥이 맞으면 이 정정을 우선 적용하고, 매번 처음부터 다시 추정하지 않는다.
-- 누적 사전으로 확정 가능한 이름/용어는 본문, 표, 액션아이템, 참석자/언급 인물 섹션에서 정정 표기를 사용한다. 원문 변형은 `## 11. 검증 완료`의 정정 근거로만 남긴다.
+- 누적 사전으로 확정 가능한 이름/용어는 본문, 액션아이템, 참석자/언급 인물 섹션에서 정정 표기를 사용한다. 원문 변형은 `### 5.2 검증 완료`의 정정 근거로만 남긴다.
 - 누적 사전과 직원 디렉토리가 충돌하면, 회의 문맥이 누적 사전의 정정 대상과 맞는지 먼저 판단한다. 예: AI Product/거버넌스 문맥의 `성모`는 `구석모` 정정 후보로 본다.
 - 단, 화자 라벨(A/B)과 실제 인물 매칭은 이 회의 전사 문맥으로 재확인한다. 표기 사전은 "이 변형은 이 사람/용어를 뜻한다"는 사전일 뿐, 특정 화자가 누구인지까지 결정하지 않는다.
-- 확정 보정은 `## 검증 완료`에 다시 기록해 사전이 계속 누적되게 한다.
+- 확정 보정은 `### 5.2 검증 완료`에 다시 기록해 사전이 계속 누적되게 한다.
 
 LEDGER
         cat "$BASE/glossary/identity_ledger.md"
@@ -398,6 +443,22 @@ TAIL
       cat "$note_transcript"
     } | "$BASE/sh/run-note-llm.sh" \
         --out "$out"
+
+    fact_check_json="$MEETING_FACT_CHECK_DIR/$proj/$name.json"
+    if [ "$MEETING_FACT_CHECK" != "0" ]; then
+      "$MEETING_FACT_CHECK_RUNNER" \
+        --note "$out" \
+        --transcript "$note_transcript" \
+        --audio "$BASE/audio/$proj/$name.m4a" \
+        --out-json "$fact_check_json"
+    else
+      python3 "$BASE/sh/meeting_fact_check.py" fallback \
+        --note "$out" \
+        --transcript "$note_transcript" \
+        --output "$fact_check_json" \
+        --reason "설정에서 객관 명제 팩트체크가 비활성화됨"
+    fi
+    python3 "$BASE/sh/validate_meeting_note.py" "$out"
 
     made=$((made + 1))
   done

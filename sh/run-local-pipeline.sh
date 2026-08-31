@@ -22,7 +22,8 @@ Runs the local Voice Memos pipeline:
   5. quarantine low-content/noise transcripts
   6. propose and deterministically validate lexical transcript corrections
   7. generate Markdown meeting notes
-  8. generate meeting context review artifacts
+  8. render date-partitioned human-review Markdown and optional SVG
+  9. generate meeting context review artifacts
 
 Options:
   --dry-run   Report what would run without copying, transcribing, writing notes, or generating reviews.
@@ -226,7 +227,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
       "$BASE/sh/correct-transcripts.sh"
     fi
   fi
+  echo "dry-run: date-partitioned Notion-readable previews would be generated for completed notes"
   echo "dry-run: meeting context reviews would be generated for newly created notes"
+  echo "dry-run: completed notes would be registered for a separate Notion publication decision"
   echo "dry-run: no audio copied, transcripts written, notes generated, or reviews generated"
   exit 0
 fi
@@ -279,6 +282,11 @@ if [ ! -s "$review_targets" ]; then
   exit 0
 fi
 
+echo "rendering local human-review meeting notes..."
+python3 "$BASE/sh/notion_publication.py" render \
+  --base "$BASE" \
+  --file-list "$review_targets"
+
 echo "refreshing meeting identity context with newly completed notes..."
 refresh_meeting_identity_context
 
@@ -305,5 +313,11 @@ while IFS= read -r note; do
     uv run meeting-context-reviewer review "${review_args[@]}"
   )
 done < "$review_targets"
+
+echo "registering completed notes for a separate Notion publication decision..."
+python3 "$BASE/sh/notion_publication.py" enqueue \
+  --base "$BASE" \
+  --pending-file "$BASE/state/notion-publication/pending.txt" \
+  --file-list "$review_targets"
 
 echo "=== local pipeline done ==="

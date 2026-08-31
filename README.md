@@ -80,7 +80,9 @@ The uploader uses [`notion-native-toolkit`](https://github.com/seokmogu/notion-n
   make-notes.sh
       - skills/meeting-minutes/SKILL.md를 회의록 작성 계약으로 사용
       - 선택된 LLM provider가 검증된 교정본(없으면 원문), 최근 회의록, 직원명단을 읽고 회의록을 작성
-      - Codex web_search + employee_roster.tsv + glossary 사용
+      - 기존 고유명사 워싱용 Codex web_search + employee_roster.tsv + glossary 사용
+      - 팩트체크는 객관 명제 후보를 검색 없이 추출하고, 개인정보를 제거한 공개 명제만 별도 Codex web_search로 검증
+      - 출처 URL·정정 사실·틀린 이유를 `## 6. 객관 명제 팩트체크`로 하단에 추가
       │
       ▼
   notes/worxphere/*.md
@@ -161,10 +163,12 @@ correct-transcripts.sh
         ▼
 make-notes.sh
   - Codex CLI로 회의록 생성
-  - Codex web_search
+  - 기존 고유명사 워싱과 별도로 공개 팩트체크 명제만 분리해 Codex web_search
   - glossary + employee_roster.tsv 주입
   - 원본 transcript 파일을 덮어쓰지 않고, 보정 결과를 notes/<project>/*.md에 반영
   - state/meeting-attendees/<project>/<meeting>.txt의 사용자 확정 참석자는 직전 회의 참석자·화자 연속성보다 우선
+  - state/fact-checks/<project>/<meeting>.*.json에 후보·검색근거·최종 판정을 저장
+  - notes/<project>/*.md 하단에 객관 명제 팩트체크를 추가
         ▼
 notes/worxphere/*.md
         ▼
@@ -218,7 +222,7 @@ Voice Memos를 중단했다가 바로 다시 녹음하면 macOS는 별도 `.m4a`
 
 ## 피드백 루프
 
-각 회의가 쌓일수록 다음 회의 정확도가 좋아지도록 세 가지 경로로 학습 데이터가 누적됩니다:
+각 회의가 쌓일수록 다음 회의 정확도가 좋아지도록 네 가지 경로로 학습 데이터가 누적됩니다:
 
 1. **핫워드 bias** (`extract_glossary.py`)
    과거 노트의 `## 기타 메모`·`## 검증 완료`·`## 검증 필요`에서 고유명사를 뽑아 `glossary_hotwords.txt`·`glossary_prompt.txt` 생성.
@@ -227,7 +231,10 @@ Voice Memos를 중단했다가 바로 다시 녹음하면 macOS는 별도 `.m4a`
 2. **웹검색 워싱** (`make-notes.sh`)
    선택된 LLM provider가 전사 오류로 의심되는 고유명사를 웹검색 도구로 검증 후 정정 → `## 검증 완료`에 `원문 → 정정 (근거)` 형태로 기록.
 
-3. **이름 정규화** (로스터 + 회의록 작성 스킬)
+3. **객관 명제 팩트체크** (`run-meeting-fact-check.sh`)
+   검색 없이 화자·타임스탬프가 있는 객관 명제와 상충 발언을 먼저 추출한다. 사람명·사내 문맥을 제거한 공개 명제만 별도 Codex web search에 전달하고, 직접 출처 URL·정정 사실·틀린 이유가 있는 결과를 회의록 하단에 추가한다. 의견·전략 판단·예측은 판정하지 않으며, 검색 실행 증거가 없으면 `틀림`으로 확정하지 않는다.
+
+4. **이름 정규화** (로스터 + 회의록 작성 스킬)
    직원 명부(`build_employee_roster.sh` → FamilyBab 재직 스냅샷 + WDC `notion_users.json` 보강 + 로컬 이력 원장)와
    **누적 확정 사전**(`build_identity_ledger.py`), **자모 음성유사도 후보**(`phonetic_name_candidates.py`)를
    노트 프롬프트에 함께 주입. "성모/성문/성원" 같은 전사 변이를 `구석모` 하나로 수렴.
@@ -302,6 +309,9 @@ cp .env.example .env
 | `MEETING_TRANSCRIPT_CORRECTION_MIN_CONFIDENCE` | `0.92` | 이 값 미만의 LLM 제안은 자동 거절 |
 | `MEETING_TRANSCRIPT_CORRECTION_PERSON_LEDGER_MIN_COUNT` | `5` | 누적 사전 인물 매핑을 자동 적용하기 위한 최소 과거 확정 횟수 |
 | `MEETING_TRANSCRIPT_CORRECTION_MAX_EDIT_RATIO` | `0.05` | 교정본에서 허용하는 원본 대비 최대 변경 비율 |
+| `MEETING_FACT_CHECK` | `1` | 회의록 하단 객관 명제 팩트체크 단계 활성화 |
+| `MEETING_FACT_CHECK_WEB_SEARCH` | `1` | 개인정보를 제거한 공개 명제의 Codex web search 활성화 |
+| `MEETING_FACT_CHECK_REASONING_EFFORT` | `high` | 객관 명제 추출·근거 판정 reasoning effort |
 | `CODEX_BIN` | PATH의 `codex` | Codex CLI 경로 override |
 | `CODEX_MODEL` | `frontier` | `frontier`는 실행 시점의 `OMX_DEFAULT_FRONTIER_MODEL`, 없으면 `~/.codex/config.toml`의 `model`로 해석된다 |
 | `CODEX_REASONING_EFFORT` | `highest` | `highest`는 Codex `model_reasoning_effort="xhigh"`로 해석된다 |
@@ -371,26 +381,24 @@ sqlite3 ~/Library/Application\ Support/Notion/notion.db "SELECT id, name FROM sp
 
 ### Voice Memos 자동화
 
-로컬 자동화 entrypoint는 `run-local-pipeline.sh`이다. 이 경로는 Voice Memos sync → local transcription → 제한 교정 파생본 → Markdown note → meeting-context-reviewer 산출물까지만 수행한다. Notion 업로드와 Git push는 실행하지 않는다.
+로컬 자동화 entrypoint는 `run-local-pipeline.sh`이다. 이 경로는 Voice Memos sync → local transcription → 제한 교정 파생본 → 에이전트용 Markdown note → 일자별 사람 검토용 Notion-readable 결과 → meeting-context-reviewer 산출물까지 수행한다. Notion 업로드와 Git push는 실행하지 않는다.
+
+기존 정본을 보존한 전체 재작성은 `rebuild-notes-to-candidate.sh`를 사용한다. 출력은 `meeting-note-rebuilds/active/<batch-date>/`에만 생성되며, 중단·비교 배치는 `meeting-note-rebuilds/archive/`에 보존한다.
 
 `transcribe.sh`는 Whisper/pyannote 결과를 원본 `transcripts/<project>/*.txt`로 남긴다. 이어서 `correct-transcripts.sh`가 검색 도구와 이전 회의 본문 없이 현재 참석자, 직원명단, 누적 확정 사전만 사용해 lexical JSON patch를 제안받는다. 누적 사전도 같은 project에서 현재 회의보다 파일명 시각이 앞선 회의만으로 새로 만들어, 재실행 시 현재/미래 회의의 판단이 역유입되거나 자기 확정되는 것을 막는다. `apply_transcript_corrections.py`는 타임스탬프·화자·줄 순서 보존, 정확한 원문 부분 일치, 사전/명부 근거, 신뢰도, 숫자·부정어·기한 보호, 줄별/전체 변경량 제한을 검사한다. 통과한 patch만 `state/corrected-transcripts/`에 적용하고 모든 거절 사유를 manifest에 남긴다. `make-notes.sh`는 원본/교정본 SHA-256 검증이 성공한 경우에만 교정본을 사용하며, 실패하거나 기능이 꺼져 있으면 원본으로 fail-open 한다.
 
 교정 단계는 문장 다듬기나 요약을 하지 않는다. 긴 훼손 구간, 일반 문법, 조사, 반복 발화는 그대로 유지하고 인명·제품명·조직명·약어의 최소 문자열만 다룬다. 원본 transcript는 감사와 재처리를 위해 항상 유지된다.
 
-회의록 작성 스킬은 Samko `voice_note_whisper`의 운영 회의록 방식에 맞춰 짧은 요약 대신 다음 구조를 기본으로 한다.
+회의록 작성 스킬은 결론·액션·미결·근거·검증을 서로 다른 단일 원본으로 분리한다. `Action Items`를 액션의 단일 원본으로 사용하고, 별도 `Task Handoff`는 만들지 않는다.
 Codex에서 직접 이 스킬을 호출할 수 있게 하려면 `./sh/install-meeting-skill.sh`를 실행한다. 설치 대상은 기본적으로 `~/.codex/skills/worxphere-meeting-minutes`이고, 파이프라인은 repo 안의 같은 `SKILL.md`를 source of truth로 읽는다.
 
-- `핵심 요약`
-- `주요 결정 및 방향`
-- `주요 논의`
-- `Agenda Evaluation`
-- `Previous Action Follow-up`
-- `Action Items`
-- `Task Handoff`
-- `리스크 및 확인 필요 사항`
-- `다음 회의에서 확인할 사항`
-- `참석자/언급 인물`
-- `검증 완료` / `검증 필요`
+최초 초안은 `skills/meeting-minutes/references/korean-naturalness.md`를 함께 적용한다. 이 규칙은 `humanize-korean` quick rules의 회의록용 보수적 적용본으로, 구조화 불릿·상태 라벨·검증 원문은 유지하면서 반복 종결, 번역투, 반복 영문 병기, 추상 명사화를 줄인다. `validate_meeting_note.py`가 자연스러움 위반을 구조·사실 계약과 함께 검사하며, 실패하면 기존 1회 재작성 루프가 해당 오류를 고친다.
+
+- `핵심 결론 및 결정사항` — 최대 7개 항목, 1,400자 이내, 상세 근거는 `§4.x`로 참조
+- `Action Items` — 체크박스형 결과물 문장 + `담당 범위 · 기한 · 근거 섹션` 한 줄
+- `미결 쟁점 및 다음 결정` — 결정이 필요한 항목만 담당 범위·기한·근거와 함께 표시
+- `상세 논의와 근거` — 결론을 재선언하지 않고 발언·맥락만 유지
+- `참석자·용어 검증 부록` — 참석자, 검증 완료, 검증 필요를 하위 항목으로 유지
 
 ```bash
 ./sh/run-local-pipeline.sh --dry-run
@@ -467,18 +475,14 @@ NOTION_UPLOAD_DATABASE_ID=00000000000000000000000000000000
 
 ```
 # {회의 주제 제목}
-## 1. 핵심 요약
-## 2. 주요 결정 및 방향
-## 3. 주요 논의
-## 4. Agenda Evaluation
-## 5. Previous Action Follow-up
-## 6. Action Items
-## 7. Task Handoff
-## 8. 리스크 및 확인 필요 사항
-## 9. 다음 회의에서 확인할 사항
-## 10. 참석자/언급 인물
-## 11. 검증 완료
-## 12. 검증 필요
+## 1. 핵심 결론 및 결정사항
+## 2. Action Items
+## 3. 미결 쟁점 및 다음 결정
+## 4. 상세 논의와 근거
+## 5. 참석자·용어 검증 부록
+### 5.1 참석자/언급 인물
+### 5.2 검증 완료
+### 5.3 검증 필요
 ```
 
 화자 분리된 로컬 전사는 A/B 역할 추론 섹션이 추가됨. Notion 전사는 화자 없이 평문.

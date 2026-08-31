@@ -10,6 +10,7 @@ TRANSCRIPT_DIR="$BASE/transcripts"
 CORRECTED_DIR="${MEETING_CORRECTED_TRANSCRIPT_DIR:-$BASE/state/corrected-transcripts}"
 CORRECTION_DIR="${MEETING_TRANSCRIPT_CORRECTION_DIR:-$BASE/state/transcript-corrections}"
 ATTENDEES_DIR="${MEETING_ATTENDEES_DIR:-$BASE/state/meeting-attendees}"
+ATTENDEE_IDENTITIES_FILE="${MEETING_ATTENDEE_IDENTITIES_FILE:-$BASE/state/meeting-attendee-identities.tsv}"
 VOICE_TITLE_DIR="${VOICE_MEMO_TITLE_DIR:-$BASE/state/voice-memo-titles}"
 FORCE=0
 DRY_RUN=0
@@ -172,7 +173,9 @@ person_name의 after에는 소속/직책을 붙이지 말고 이름과 원문 �
 ---
 현재 회의 근거:
 PROMPT
-      emit_optional_file "사용자 확정 참석자:" "$attendees"
+      "$BASE/sh/render_meeting_attendee_context.py" \
+        --attendees "$attendees" \
+        --identities "$ATTENDEE_IDENTITIES_FILE"
       emit_optional_file "Voice Memo 제목(보조 근거):" "$voice_title"
       emit_optional_file "현재 transcript에 실제 등장한 누적 확정 표기 후보:" "$relevant_ledger"
       emit_optional_file "현재 transcript에서 계산한 발음 유사 직원 후보:" "$phonetic_candidates"

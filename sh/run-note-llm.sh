@@ -178,25 +178,7 @@ run_codex() {
 
 validate_note_output() {
   local output_file="$1"
-  local first_line
-  first_line="$(awk 'NF {print; exit}' "$output_file")"
-  if [[ ! "$first_line" =~ ^#\  ]]; then
-    echo "invalid meeting note output: first non-empty line is not an H1 Markdown title" >&2
-    return 1
-  fi
-  local required=(
-    "## 1. 핵심 요약"
-    "## 6. Action Items"
-    "## 11. 검증 완료"
-    "## 12. 검증 필요"
-  )
-  local section
-  for section in "${required[@]}"; do
-    if ! grep -Fq "$section" "$output_file"; then
-      echo "invalid meeting note output: missing required section: $section" >&2
-      return 1
-    fi
-  done
+  "$BASE/sh/validate_meeting_note.py" "$output_file"
 }
 
 case "$OUTPUT_TYPE" in
@@ -210,7 +192,10 @@ esac
 prompt_file="$(mktemp)"
 codex_prompt="$(mktemp)"
 selected_output="$(mktemp)"
-trap 'rm -f "$prompt_file" "$codex_prompt" "$selected_output"' EXIT
+validation_log="$(mktemp)"
+repair_prompt="$(mktemp)"
+repaired_output="$(mktemp)"
+trap 'rm -f "$prompt_file" "$codex_prompt" "$selected_output" "$validation_log" "$repair_prompt" "$repaired_output"' EXIT
 
 cat > "$prompt_file"
 search_available="no"
@@ -232,7 +217,35 @@ CONTEXT
 mkdir -p "$(dirname "$OUT")"
 run_codex "$codex_prompt" "$selected_output"
 if [ "$OUTPUT_TYPE" = "note" ]; then
-  validate_note_output "$selected_output"
+  if ! validate_note_output "$selected_output" > "$validation_log" 2>&1; then
+    cat "$validation_log" >&2
+    echo "meeting note contract failed; retrying once with validator feedback" >&2
+    {
+      cat "$codex_prompt"
+      cat <<'REPAIR'
+
+---
+첫 번째 회의록 초안이 결정적 계약 검증에 실패했습니다.
+아래 검증 오류만 고치되, 원문 전사의 사실·수치·날짜·이름·부정·확정성은 바꾸지 마세요.
+수정된 전체 한국어 Markdown 회의록만 출력하세요. 설명이나 완료 보고는 출력하지 마세요.
+
+검증 오류:
+REPAIR
+      cat "$validation_log"
+      cat <<'REPAIR'
+
+첫 번째 초안:
+REPAIR
+      cat "$selected_output"
+    } > "$repair_prompt"
+    run_codex "$repair_prompt" "$repaired_output"
+    if ! validate_note_output "$repaired_output" > "$validation_log" 2>&1; then
+      cat "$validation_log" >&2
+      echo "meeting note contract failed after one repair attempt" >&2
+      exit 1
+    fi
+    cp "$repaired_output" "$selected_output"
+  fi
 else
   "$BASE/sh/apply_transcript_corrections.py" check-proposal "$selected_output"
 fi

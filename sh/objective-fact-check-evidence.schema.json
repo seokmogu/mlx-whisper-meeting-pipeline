@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "web_search_performed", "results"],
+  "properties": {
+    "version": {"type": "integer", "const": 1},
+    "web_search_performed": {"type": "boolean"},
+    "results": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["candidate_id", "verdict", "corrected_fact", "explanation", "error_type", "confidence", "valid_as_of", "sources"],
+        "properties": {
+          "candidate_id": {"type": "string", "pattern": "^C[1-9][0-9]*$"},
+          "verdict": {"enum": ["verified", "contradicted", "partially_verified", "not_assessable"]},
+          "corrected_fact": {"type": "string", "maxLength": 1000},
+          "explanation": {"type": "string", "minLength": 1, "maxLength": 1800},
+          "error_type": {"enum": ["none", "definition_mismatch", "unit_or_calculation", "date_or_version", "scope_overgeneralization", "correlation_causation", "outdated_fact", "wrong_authority", "other"]},
+          "confidence": {"enum": ["high", "medium", "low"]},
+          "valid_as_of": {"type": "string", "maxLength": 100},
+          "sources": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["title", "url", "source_type", "locator", "why_relevant"],
+              "properties": {
+                "title": {"type": "string", "minLength": 1, "maxLength": 300},
+                "url": {"type": "string", "maxLength": 2000},
+                "source_type": {"enum": ["deterministic", "official_primary", "standard", "public_data", "company_authority", "reliable_secondary"]},
+                "locator": {"type": "string", "minLength": 1, "maxLength": 500},
+                "why_relevant": {"type": "string", "minLength": 1, "maxLength": 700}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

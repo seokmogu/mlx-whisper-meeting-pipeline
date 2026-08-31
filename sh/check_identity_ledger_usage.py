@@ -10,7 +10,9 @@ from pathlib import Path
 
 
 LEDGER_LINE_RE = re.compile(r"^\s*[-*]\s*(.+?)\s*(?:->|→)\s*\*\*([^*]+)\*\*.*?\((\d+)회\)")
-SECTION_HEADER_RE = re.compile(r"^##\s*(?:\d+[.]\s*)?(.+?)\s*$")
+SECTION_HEADER_RE = re.compile(
+    r"^#{2,3}\s*(?:[0-9]+(?:[.][0-9]+)*[.]?\s*)?(.+?)\s*$"
+)
 HANGUL_TOKEN_RE = re.compile(r"^[가-힣]{2,8}$")
 KOREAN_PARTICLE_RE = r"(?:은|는|이|가|을|를|과|와|에게|께|도|만|로|으로|의)"
 

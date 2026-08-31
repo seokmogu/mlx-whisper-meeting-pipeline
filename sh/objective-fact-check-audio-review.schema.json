@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "results"],
+  "properties": {
+    "version": {"type": "integer", "const": 1},
+    "results": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["candidate_id", "status", "explanation", "supporting_text"],
+        "properties": {
+          "candidate_id": {"type": "string", "pattern": "^C[1-9][0-9]*$"},
+          "status": {"enum": ["confirmed", "not_confirmed", "uncertain"]},
+          "explanation": {"type": "string", "minLength": 1, "maxLength": 1200},
+          "supporting_text": {"type": "string", "maxLength": 700}
+        }
+      }
+    }
+  }
+}

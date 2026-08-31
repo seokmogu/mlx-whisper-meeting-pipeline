@@ -1,0 +1,55 @@
+{
+  "cases": [
+    {
+      "id": "single_speaker",
+      "word": {"start": 0.2, "end": 0.8},
+      "turns": [
+        {"start": 0.0, "end": 1.0, "speaker": "A"}
+      ],
+      "expected": {"speaker": "A", "uncertain": false, "simultaneous": false}
+    },
+    {
+      "id": "boundary_prefers_longer_overlap",
+      "word": {"start": 0.8, "end": 1.4},
+      "turns": [
+        {"start": 0.0, "end": 1.0, "speaker": "A"},
+        {"start": 1.0, "end": 2.0, "speaker": "B"}
+      ],
+      "expected": {"speaker": "B", "uncertain": false, "simultaneous": false}
+    },
+    {
+      "id": "overlap_prefers_dominant_duration",
+      "word": {"start": 0.6, "end": 1.1},
+      "turns": [
+        {"start": 0.0, "end": 1.0, "speaker": "A"},
+        {"start": 0.2, "end": 1.2, "speaker": "B"}
+      ],
+      "expected": {"speaker": "B", "uncertain": true, "simultaneous": true}
+    },
+    {
+      "id": "near_tie_at_speaker_change",
+      "word": {"start": 0.9, "end": 1.1},
+      "turns": [
+        {"start": 0.0, "end": 1.0, "speaker": "A"},
+        {"start": 1.0, "end": 2.0, "speaker": "B"}
+      ],
+      "expected": {"speaker": "A", "uncertain": true, "simultaneous": false}
+    },
+    {
+      "id": "no_matching_turn",
+      "word": {"start": 2.0, "end": 2.5},
+      "turns": [
+        {"start": 0.0, "end": 1.0, "speaker": "A"}
+      ],
+      "expected": {"speaker": null, "uncertain": true, "simultaneous": false}
+    },
+    {
+      "id": "zero_duration_word_preserves_point_assignment",
+      "word": {"start": 0.5, "end": 0.5},
+      "turns": [
+        {"start": 0.0, "end": 1.0, "speaker": "A"}
+      ],
+      "expected": {"speaker": "A", "uncertain": true, "simultaneous": false}
+    }
+  ]
+}

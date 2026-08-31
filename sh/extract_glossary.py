@@ -21,9 +21,23 @@ def write_if_changed(path: Path, content: str) -> bool:
 
 
 def section(text: str, header: str) -> str:
-    pattern = rf"##\s*{re.escape(header)}\s*\n(.*?)(?=\n##|\Z)"
-    m = re.search(pattern, text, re.DOTALL)
-    return m.group(1) if m else ""
+    heading_re = re.compile(
+        rf"^#{{2,3}}\s*(?:[0-9]+(?:[.][0-9]+)*[.]?\s*)?{re.escape(header)}\s*$",
+        re.MULTILINE,
+    )
+    match = heading_re.search(text)
+    if not match:
+        return ""
+    body_start = text.find("\n", match.end())
+    if body_start < 0:
+        return ""
+    next_heading = re.search(r"^#{2,3}\s+", text[body_start + 1 :], re.MULTILINE)
+    body_end = (
+        body_start + 1 + next_heading.start()
+        if next_heading
+        else len(text)
+    )
+    return text[body_start + 1 : body_end]
 
 
 def extract_terms(note_text: str) -> list[str]:

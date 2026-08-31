@@ -10,6 +10,15 @@ This repository owns the local-first Voice Memos/audio to Korean meeting-notes w
 - The expected outputs are `audio/worxphere/<name>.m4a`, `transcripts/worxphere/<name>.txt`, `notes/worxphere/<name>.md`, and matching review artifacts under `../meeting-context-reviewer/reviews/`.
 - Keep Notion upload disabled unless the user explicitly approves the exact Notion write target and scope in the current conversation.
 
+## Notion Publication Boundary
+
+- The local audio pipeline may enqueue a note only after transcript, meeting note, and context review generation finish. It must not perform a Notion write itself.
+- The local pipeline always renders a human-review derivative under `notion-readable/<project>/YYYY-MM-DD/<stem>.md`, plus an optional SVG only when the meeting structure benefits from it. This local result does not authorize publication.
+- `sh/run-notion-publication-pipeline.sh` is the independent publication-decision entrypoint. It refreshes and validates the reviewed derivative, then delegates only an approved live write to the configured Codex Notion MCP connection.
+- Route the latest Voice Memo title or external recording filename containing the standalone keyword `비공개` to private data source `collection://7483a1ab-d3cb-4b4d-b626-309ec554d7d1` (`내부미팅 v2`). Route every other completed note to company-visible data source `collection://1f62af1e-16e1-4679-9485-d7c349d28559` (`AI Product 팀 회의록`).
+- Use the generated meeting-note H1 as `회의명`; the recording title or filename is only privacy and attendee metadata. Preserve `참여자` as text in the private DB and map exact unique Notion users to `회의참석자` in the team DB.
+- Never seed, migrate, move, archive, trash, or delete rows from the legacy `내부미팅` database automatically. Historical migration and cleanup are separately approved batch scopes.
+
 ## Skill Boundary
 
 - `skills/meeting-minutes/SKILL.md` is the meeting-note writing contract used by `sh/make-notes.sh` after STT transcripts exist.

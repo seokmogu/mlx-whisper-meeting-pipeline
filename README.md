@@ -8,7 +8,7 @@ Local-first meeting-notes pipeline for Korean audio. The active production path 
 
 The pipeline keeps private meeting artifacts out of git while making the processing code reusable. Each meeting project is a subdirectory under `audio/`, `transcripts/`, and `notes/`, configured by `MEETING_PROJECTS`. This MacBook is currently configured as a Worxphere-only recorder: `VOICE_MEMO_FORCE_PROJECT=worxphere` sends every local Voice Memo to `audio/worxphere/` regardless of memo title.
 
-The active loop is idempotent: sync completed Voice Memos, import manually copied phone recordings, trim/merge/quarantine audio, transcribe with `mlx-whisper`, split speakers with `pyannote`, apply only evidence-backed lexical transcript patches with Codex, generate Markdown meeting notes with Codex, then run `meeting-context-reviewer`. The raw transcript is immutable. Past notes and the employee roster feed the next run so transcripts and person matching improve over time. Current-meeting attendee hints always take precedence over participant continuity inferred from earlier meetings.
+The active loop syncs completed Voice Memos, imports manually copied phone recordings, trims/merges/quarantines audio, transcribes with `mlx-whisper`, splits speakers with `pyannote`, applies evidence-backed lexical transcript patches, generates validated Markdown notes, then runs `meeting-context-reviewer`. Incomplete note/review jobs are checkpointed and retried; canonical notes are promoted only after validation. The raw transcript is immutable. Past notes and the employee roster supply context for later runs. Current-meeting attendee hints always take precedence over participant continuity inferred from earlier meetings.
 
 ## Quick Start
 
@@ -32,15 +32,9 @@ The launchd installer baselines existing recordings as already seen, loads the u
 
 ## Optional Notion Upload
 
-This is not part of the active local Voice Memos automation. If explicitly enabled for a separate run, set `NOTION_UPLOAD_DATABASE_ID` to upload only newly generated Markdown notes to a Notion database. Existing notes are not backfilled by default. Pending uploads are stored in `state/notion-upload/pending.txt`; successful uploads and title matches are removed from the queue, while failures remain for retry.
+The local Voice Memos pipeline never writes to Notion. It renders a readable preview and queues a note only when its transcript, validated canonical note, and fresh context review are complete. A readiness receipt binds those artifacts by SHA-256.
 
-```bash
-NOTION_NATIVE_PROFILE=                  # blank = notion-native-toolkit default profile
-NOTION_NATIVE_TOOLKIT_DIR=$HOME/project/notion-native-toolkit
-NOTION_UPLOAD_DATABASE_ID=00000000000000000000000000000000
-```
-
-The uploader uses [`notion-native-toolkit`](https://github.com/seokmogu/notion-native-toolkit), maps common database properties such as title/date/participants/type, and updates an existing page when local state already knows its page id. New notes use the first Markdown H1 as the Notion title, so `skills/meeting-minutes/SKILL.md` requires a specific topic title instead of a generic `# 미팅노트`.
+The separate publication entrypoint defaults to local preparation. Live publication requires current-conversation approval for one exact target and scope, recorded in an expiring approval file; a queue entry is not approval. See [the publication workflow](docs/NOTION_PUBLICATION_PIPELINE.md). The older `NOTION_UPLOAD_DATABASE_ID`/toolkit uploader is retained for the optional legacy remote path and is not the local workflow.
 
 ---
 
@@ -212,6 +206,10 @@ tail -80 logs/local-pipeline.log
 
 정상 상태의 핵심 신호는 `local-launchd.sh status`에서 `watching = 1`, 최신 실행의 `last exit code = 0`, 그리고 dry-run에서 기존 파일이 `skipped (already exists/seen)`로 잡히는 것이다. 폰 녹음은 `manual-audio/worxphere/`에 복사한 뒤 dry-run에서 `manual imported` 수를 확인한다.
 
+실행 중복은 OS 파일 잠금으로 차단한다. `logs/local-pipeline.lock`에는 마지막 소유 PID가 남을 수 있으므로 파일 존재만으로 실행 중이라고 판단하지 않는다. 회의록·리뷰의 미완료 단계는 `state/local-pipeline/jobs.json`에 남고 다음 실행에서 재개된다. 리뷰 도구 누락, 출력 누락, 검증 실패는 0이 아닌 종료 코드로 보고한다.
+
+과거 전사만 남은 파일을 자동으로 일괄 처리하지 않는다. 특정 기존 회의의 후속 산출물을 복구하려면 `./sh/run-local-pipeline.sh --only 'worxphere/<name>'`을 사용한다. 회의록 자체도 다시 만들려면 `--force-notes`를 추가한다. `--only`는 회의록·리뷰 범위이며, 앞단의 Voice Memos 동기화와 오디오 준비 범위는 기존과 같다.
+
 ### 중단 후 재녹음과 잡음 처리
 
 전사 전에 `prepare-audio-queue.py`가 각 오디오의 앞/뒤 무음 또는 저레벨 비발화 구간을 감지해 대화가 있는 구간만 남긴다. 내부의 긴 침묵은 회의 흐름일 수 있으므로 제거하지 않는다. trim 전 원본은 `state/audio-originals/<project>/`에 보관한다.
@@ -254,9 +252,7 @@ Voice Memos를 중단했다가 바로 다시 녹음하면 macOS는 별도 `.m4a`
 | 이름/용어 | 누적 사전 + 자모 음성유사도 + 로스터 | ASR 교체(이름 오류는 오디오 애매성이라 어떤 ASR도 못 고침) |
 | 내부 컨텍스트 | wdc 관련회의 **키워드 라벨** | 런타임 벡터검색(macmini 의존성으로 보류) |
 
-**반복 확인된 원리**: 이름 오인식은 ASR 정확도가 아니라 오디오 자체의 애매성이다 — 로컬/클라우드 4개 엔진 모두
-동일하게 잘못 듣는다. 따라서 **문맥을 아는 사후 교정(사전 + 자모 + 노트 LLM)만이 해법**이며, 무거운 ML 전사는
-100% 로컬 유지가 비용·프라이버시·품질 모두에서 최선이다.
+이 선택은 위 문서에 기록된 제한된 회의·구간의 관찰에 근거한다. 시험한 이름 오류 일부는 여러 엔진에서 반복돼 문맥 기반 사후 교정을 채택했다. 전체 한국어 회의에서 특정 ASR이 항상 우수하거나 이름 오류를 해결할 수 없다는 증거는 아니다. 모델 변경 전에는 대표 녹음과 사람 정답을 사용해 화자·숫자·부정어·담당자·기한까지 별도로 평가해야 한다.
 
 ## 녹음 후 처리 전략
 
@@ -461,6 +457,8 @@ Notion 업로드 시에도 같은 제목 메타데이터와 `state/meeting-atten
 
 현재 로컬 Voice Memos 자동화는 Notion 업로드를 하지 않는다. Notion write는 매번 별도 승인이 필요하다.
 
+현재 로컬 경로의 게시 검토·승인·결과 검증은 [독립 게시 파이프라인](docs/NOTION_PUBLICATION_PIPELINE.md)을 따른다. 아래 설정은 기존 선택적 원격 경로의 설명이며 새 로컬 경로의 승인 절차를 대체하지 않는다.
+
 `NOTION_UPLOAD_DATABASE_ID`가 설정되어 있으면 `run-remote.sh`가 실행 전후의 `notes/<project>/*.md` 목록을 비교해 이번 실행에서 새로 생성된 회의록만 Notion DB에 업로드합니다. 기존 파일은 백필하지 않습니다. 업로드 대상은 `state/notion-upload/pending.txt`에 큐잉되고, 성공하거나 DB에 같은 제목이 이미 있으면 큐에서 제거됩니다. 실패한 항목은 큐에 남아 다음 `run-pipeline.sh` 또는 `run-remote.sh` 실행 때 재시도됩니다. DB ID가 비어 있으면 새 노트를 큐에 넣지 않고 업로드 단계를 건너뜁니다.
 
 업로드는 [`notion-native-toolkit`](https://github.com/seokmogu/notion-native-toolkit) 프로필을 사용합니다.
@@ -487,10 +485,37 @@ NOTION_UPLOAD_DATABASE_ID=00000000000000000000000000000000
 
 화자 분리된 로컬 전사는 A/B 역할 추론 섹션이 추가됨. Notion 전사는 화자 없이 평문.
 
+## 테스트와 평가
+
+실제 녹음, 모델 호출, Notion 연결 없이 기존 단위 테스트와 합성 실패·복구 테스트를 실행한다. 선택적 legacy uploader 테스트는 `upload-notion-notes.sh`와 같은 기존 toolkit 실행 환경의 `httpx`가 필요하다.
+
+```bash
+../notion-native-toolkit/.venv/bin/python -m unittest discover -s tests -v
+for script in sh/*.sh; do bash -n "$script" || exit; done
+.venv-diar-test/bin/python -m unittest discover -s experiments/speaker-assignment -p 'test_*.py' -v
+git diff --check
+```
+
+기본 Python에서 `ModuleNotFoundError: httpx`가 나면 테스트 실패 원인을 런타임 의존성과 구분한다. 오디오·전사 품질과 실제 LLM/리뷰/Notion E2E는 위 합성 테스트로 입증되지 않는다. [2026-09-07 평가·개선 기록](docs/PROJECT_ASSESSMENT_2026-09-07.md)에 검증 범위와 남은 과제를 정리했다.
+
+현재 산출물과 대기 작업은 읽기 전용 진단으로 확인할 수 있다. 요약에는 회의명·본문·인명·파일 경로를 넣지 않고, 복구 대상 경로는 로컬 계획 파일에만 기록한다. 이 명령은 복구를 실행하거나 큐를 변경하지 않는다.
+
+```bash
+assessment_dir="state/assessments/$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$assessment_dir"
+PYTHONDONTWRITEBYTECODE=1 python3 sh/audit_pipeline_state.py --base . \
+  --output "$assessment_dir/audit.json" \
+  --private-plan "$assessment_dir/recovery-plan.json"
+```
+
+진단 종료 코드 0은 발견된 결함 없음, 1은 개선 대상 있음, 2는 입력·상태 해석 오류다. 보고서 파일은 새 경로만 허용한다. 계획에는 전사 복원, 회의록 재생성, 후속 리뷰 복구를 구분해 표시하며, 적용 전 해당 회의의 오류를 확인한다.
+
+[정답 기반 전사 평가](docs/TRANSCRIPT_QUALITY.md)는 사람이 검수한 전사를 명시적으로 입력받아 CER/WER과 지정한 중요 표현·화자 라벨을 비교한다. 이 검증은 모델이나 클라우드를 호출하지 않는다. 정답·검수·허용 기준이 없는 경우를 통과로 바꾸지 않는다. 실제 연결 점검과 운영 진단 결과는 [2차 개선 기록](docs/PHASE2_IMPROVEMENT_2026-09-07.md)에 정리한다.
+
 ## 개발 메모
 
 - 오디오·전사·노트·glossary·로그는 `.gitignore`로 전부 제외 (프라이버시)
 - `notion.db`는 Notion 데스크톱 앱의 로컬 캐시로 내부 구현 디테일. 스키마가 앱 업데이트로 바뀔 수 있음
-- `run-local-pipeline.sh`와 `run-remote.sh` 각 단계는 idempotent — 이미 생성된 노트/전사는 스킵
+- 로컬 경로는 완료된 전사를 재사용하고 미완료 회의록·리뷰 작업을 재시도한다. 선택적 원격 경로는 별도 구현이며 같은 복구 보장을 검증하지 않았다.
 - 화자 분리는 `pyannote/speaker-diarization-community-1`의 exclusive diarization을 사용. `pyannote.audio` 4.x가 필요하므로 `mlx-whisper` venv와 분리된 `.venv-diar-test`에서 실행
 - LLM 호출은 `sh/run-note-llm.sh`가 담당하며, Codex를 `codex --ask-for-approval never --sandbox read-only exec ...` 형태로 비대화형 실행한다.

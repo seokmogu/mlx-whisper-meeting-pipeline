@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import html
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -153,6 +154,148 @@ def save_json(path: Path, value: dict[str, Any]) -> None:
     )
 
 
+def _load_note_validator() -> Any:
+    path = repo_base() / "sh" / "validate_meeting_note.py"
+    spec = importlib.util.spec_from_file_location("notion_publication_note_validator", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"unable to load canonical meeting-note validator: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def canonical_note_coordinates(source: Path, base: Path) -> tuple[str, str]:
+    try:
+        relative = source.resolve().relative_to((base / "notes").resolve())
+    except ValueError as exc:
+        raise ValueError(f"meeting note must be under {base / 'notes'}: {source}") from exc
+    if len(relative.parts) != 2 or relative.suffix.lower() != ".md":
+        raise ValueError("meeting note must use notes/<project>/<meeting>.md")
+    return relative.parts[0], source.stem
+
+
+def review_stem(stem: str) -> str:
+    return re.sub(r"_+", "_", re.sub(r"\s+", "_", stem)).strip("_")
+
+
+def review_dir_for(source: Path, base: Path) -> Path:
+    _project, stem = canonical_note_coordinates(source, base)
+    reviewer_root = Path(
+        os.getenv(
+            "MEETING_CONTEXT_REVIEWER_DIR",
+            str(base.parent / "meeting-context-reviewer"),
+        )
+    ).expanduser()
+    return reviewer_root / "reviews" / review_stem(stem)
+
+
+def readiness_path_for(source: Path, base: Path) -> Path:
+    key = relative_note_key(source, base)
+    safe = re.sub(r"[^0-9A-Za-z가-힣._-]+", "_", key).strip("_")
+    return base / "state" / "notion-publication" / "readiness" / f"{safe}.json"
+
+
+def validate_readiness_receipt(
+    *,
+    source: Path,
+    transcript: Path,
+    candidate: Path,
+    review_dir: Path,
+    base: Path,
+) -> None:
+    path = readiness_path_for(source, base)
+    receipt = load_json(path, {})
+    if not receipt:
+        raise RuntimeError(f"publication readiness receipt is missing or invalid: {path}")
+    if receipt.get("schema_version") != 1:
+        raise RuntimeError("publication readiness receipt must use schema_version 1")
+    expected = {
+        "source_path": str(source.resolve()),
+        "source_sha256": sha256_file(source),
+        "transcript_path": str(transcript.resolve()),
+        "transcript_sha256": sha256_file(transcript),
+        "readable_path": str(candidate.resolve()),
+        "readable_sha256": sha256_file(candidate),
+        "review_dir": str(review_dir.resolve()),
+    }
+    for key, value in expected.items():
+        if receipt.get(key) != value:
+            raise RuntimeError(f"publication readiness receipt {key} does not match current artifacts")
+    artifacts = receipt.get("review_artifacts")
+    required_artifacts = {
+        "review.md",
+        "review.json",
+        "wiki-update-candidates.md",
+    }
+    if not isinstance(artifacts, dict) or set(artifacts) != required_artifacts:
+        raise RuntimeError("publication readiness receipt must hash every required review artifact")
+    for name in required_artifacts:
+        if artifacts.get(name) != sha256_file(review_dir / name):
+            raise RuntimeError(f"publication readiness receipt review artifact is stale: {name}")
+
+
+def validate_queue_admission(source: Path, base: Path) -> tuple[Path, dict[str, Any]]:
+    project, stem = canonical_note_coordinates(source, base)
+    if not source.is_file():
+        raise FileNotFoundError(f"meeting note does not exist: {source}")
+    transcript = base / "transcripts" / project / f"{stem}.txt"
+    if not transcript.is_file() or not transcript.read_text(encoding="utf-8").strip():
+        raise RuntimeError(f"completed transcript is missing or empty: {transcript}")
+
+    note_text = source.read_text(encoding="utf-8")
+    errors = _load_note_validator().validate_note(note_text)
+    if errors:
+        raise RuntimeError("canonical meeting note validation failed: " + "; ".join(errors))
+
+    candidate = readable_path_for(source, base)
+    if not candidate.is_file() or not candidate.read_text(encoding="utf-8").strip():
+        raise RuntimeError(f"readable projection is missing or empty: {candidate}")
+    assets = visual_assets_for(candidate)
+    marker = assets[0].get("local_markdown") if assets else None
+    projection = validate_projection(
+        note_text,
+        candidate.read_text(encoding="utf-8"),
+        visual_marker=marker,
+    )
+    if projection.get("faithful") is not True:
+        raise RuntimeError("readable projection is not fresh for the canonical meeting note")
+    for asset in assets:
+        for path_key, hash_key in (
+            ("svg_path", "svg_sha256"),
+            ("embed_html_path", "embed_html_sha256"),
+        ):
+            asset_path = Path(str(asset.get(path_key, "")))
+            if not asset_path.is_file() or asset.get(hash_key) != sha256_file(asset_path):
+                raise RuntimeError(f"readable visual asset is missing or stale: {asset_path}")
+
+    review_dir = review_dir_for(source, base)
+    missing = [
+        name
+        for name in ("review.md", "review.json", "wiki-update-candidates.md")
+        if not (review_dir / name).is_file()
+        or not (review_dir / name).stat().st_size
+    ]
+    if missing:
+        raise RuntimeError(
+            "completed context review artifacts are missing: "
+            + ", ".join(str(review_dir / name) for name in missing)
+        )
+    try:
+        review_payload = json.loads((review_dir / "review.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("completed context review JSON is invalid") from exc
+    if not isinstance(review_payload, dict):
+        raise RuntimeError("completed context review JSON must be an object")
+    validate_readiness_receipt(
+        source=source,
+        transcript=transcript,
+        candidate=candidate,
+        review_dir=review_dir,
+        base=base,
+    )
+    return candidate, projection
+
+
 def relative_note_key(path: Path, base: Path) -> str:
     try:
         return str(path.resolve().relative_to(base.resolve()))
@@ -198,8 +341,7 @@ def enqueue(
         path = resolve_note_path(value, base)
         if path.name.endswith("_notion-readable.md") or path.suffix.lower() != ".md":
             continue
-        if not path.is_file():
-            raise FileNotFoundError(f"meeting note does not exist: {path}")
+        validate_queue_admission(path, base)
         key = relative_note_key(path, base)
         if key not in queued:
             queued.append(key)
@@ -231,11 +373,13 @@ def reconcile_changed_labels(
         current_visibility = resolve_visibility(source, base, current_label)
         current_author = publication_author_name()
         current_author_user_id = publication_author_user_id()
+        current_source_sha256 = sha256_file(source)
         if (
             publication.get("source_label") != current_label
             or publication.get("visibility") != current_visibility
             or publication.get("author_name") != current_author
             or publication.get("author_user_id") != current_author_user_id
+            or publication.get("source_sha256") != current_source_sha256
         ):
             changed.append(key)
     if not changed:
@@ -1332,11 +1476,8 @@ def prepare(
     validator: Path,
     state: dict[str, Any],
 ) -> tuple[PublicationMetadata, dict[str, Any], Path]:
-    candidate, validation = create_readable_candidate(
-        source,
-        base=base,
-        validator=validator,
-    )
+    del validator
+    candidate, validation = validate_queue_admission(source, base)
     metadata = build_metadata(source, candidate, base=base)
     key = relative_note_key(source, base)
     previous = state.get("files", {}).get(key)
@@ -1350,6 +1491,111 @@ def prepare(
     return metadata, validation, request_path
 
 
+APPROVAL_FIELDS = (
+    "approval_id",
+    "request_path",
+    "request_sha256",
+    "source_path",
+    "source_sha256",
+    "readable_path",
+    "readable_sha256",
+    "target_data_source_id",
+    "expires_at",
+)
+
+
+def _required_string(payload: dict[str, Any], key: str, *, label: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"{label} must contain a non-empty {key}")
+    return value
+
+
+def load_approval(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"publication approval file not found: {path}") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"publication approval file is invalid JSON: {path}") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(f"publication approval file must be a JSON object: {path}")
+    for key in APPROVAL_FIELDS:
+        _required_string(value, key, label="publication approval file")
+    return value
+
+
+def request_snapshot(request_path: Path, base: Path) -> dict[str, str]:
+    expected_dir = (base / "state" / "notion-publication" / "requests").resolve()
+    try:
+        request_path.resolve().relative_to(expected_dir)
+    except ValueError as exc:
+        raise RuntimeError(f"publication request must be under {expected_dir}: {request_path}") from exc
+    request = load_json(request_path, {})
+    if not request:
+        raise RuntimeError(f"publication request is missing or invalid: {request_path}")
+    fields = (
+        "source_path",
+        "source_sha256",
+        "readable_path",
+        "readable_sha256",
+        "target_data_source_id",
+    )
+    return {
+        key: _required_string(request, key, label="publication request") for key in fields
+    }
+
+
+def validate_approval_file(
+    approval_file: Path,
+    request_path: Path,
+    *,
+    base: Path,
+) -> dict[str, Any]:
+    approval = load_approval(approval_file)
+    snapshot = request_snapshot(request_path, base)
+    expected = {
+        "request_path": str(request_path.resolve()),
+        "request_sha256": sha256_file(request_path),
+        **snapshot,
+    }
+    for key, value in expected.items():
+        if approval.get(key) != value:
+            raise RuntimeError(f"publication approval {key} does not match the prepared request")
+    try:
+        expires_at = datetime.fromisoformat(
+            _required_string(approval, "expires_at", label="publication approval file").replace(
+                "Z", "+00:00"
+            )
+        )
+    except ValueError as exc:
+        raise RuntimeError("publication approval expires_at must be ISO-8601 with a timezone") from exc
+    if expires_at.tzinfo is None:
+        raise RuntimeError("publication approval expires_at must include a timezone")
+    if expires_at <= datetime.now(timezone.utc):
+        raise RuntimeError("publication approval has expired")
+
+    source = Path(snapshot["source_path"])
+    candidate = Path(snapshot["readable_path"])
+    if not source.is_file() or sha256_file(source) != snapshot["source_sha256"]:
+        raise RuntimeError("publication source changed after the approval request was prepared")
+    if not candidate.is_file() or sha256_file(candidate) != snapshot["readable_sha256"]:
+        raise RuntimeError("publication readable projection changed after the approval request was prepared")
+    if candidate.resolve() != readable_path_for(source, base).resolve():
+        raise RuntimeError("publication request readable path is not the canonical projection path")
+    validate_queue_admission(source, base)
+    return approval
+
+
+def assert_metadata_snapshot_fresh(metadata: PublicationMetadata) -> None:
+    source = Path(metadata.source_path)
+    candidate = Path(metadata.readable_path)
+    if not source.is_file() or sha256_file(source) != metadata.source_sha256:
+        raise RuntimeError("publication source changed after preparation")
+    if not candidate.is_file() or sha256_file(candidate) != metadata.readable_sha256:
+        raise RuntimeError("publication readable projection changed after preparation")
+
+
 def _receipt_success(receipt: dict[str, Any]) -> bool:
     return (
         receipt.get("status") in {"created", "updated", "skipped"}
@@ -1357,6 +1603,19 @@ def _receipt_success(receipt: dict[str, Any]) -> bool:
         and isinstance(receipt.get("page_id"), str)
         and bool(receipt.get("page_id"))
     )
+
+
+def validate_receipt_identity(
+    receipt: dict[str, Any], metadata: PublicationMetadata
+) -> None:
+    expected = {
+        "visibility": metadata.visibility,
+        "target_data_source_id": metadata.target_data_source_id,
+        "title": metadata.title,
+    }
+    for key, value in expected.items():
+        if receipt.get(key) != value:
+            raise RuntimeError(f"publication receipt {key} does not match the prepared request")
 
 
 def live_export_path_for(source: Path, base: Path) -> Path:
@@ -1417,6 +1676,7 @@ def invoke_agent(
     receipt_path: Path,
     *,
     publish: bool,
+    approval_file: Path | None = None,
 ) -> dict[str, Any]:
     command = [
         str(agent),
@@ -1426,6 +1686,10 @@ def invoke_agent(
         str(receipt_path),
         "--publish" if publish else "--preflight",
     ]
+    if publish:
+        if approval_file is None:
+            raise RuntimeError("live publication requires an explicit approval file")
+        command.extend(["--approval-file", str(approval_file)])
     result = subprocess.run(command, check=False, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"Notion publication agent failed with exit {result.returncode}")
@@ -1471,6 +1735,15 @@ def run_queue(args: argparse.Namespace) -> int:
 
     validator = Path(args.validator).expanduser()
     agent = Path(args.agent).expanduser()
+    approval_file = (
+        Path(args.approval_file).expanduser()
+        if getattr(args, "approval_file", None)
+        else None
+    )
+    if args.publish and args.limit != 1:
+        raise RuntimeError("live publication requires --limit 1 and one exact approval file")
+    if args.publish and approval_file is None:
+        raise RuntimeError("live publication requires --approval-file")
     completed: set[str] = set()
     results: list[dict[str, Any]] = []
     failures = 0
@@ -1497,12 +1770,21 @@ def run_queue(args: argparse.Namespace) -> int:
                 "action": "prepared",
             }
             if args.preflight or args.publish:
+                if args.publish:
+                    assert approval_file is not None
+                    validate_approval_file(
+                        approval_file,
+                        request_path,
+                        base=base,
+                    )
+                    assert_metadata_snapshot_fresh(metadata)
                 receipt_path = receipt_path_for(source, base)
                 receipt = invoke_agent(
                     agent,
                     request_path,
                     receipt_path,
                     publish=args.publish,
+                    approval_file=approval_file,
                 )
                 sanitized_receipt = {
                     key: value
@@ -1512,6 +1794,8 @@ def run_queue(args: argparse.Namespace) -> int:
                 result["receipt"] = sanitized_receipt
                 result["action"] = str(receipt.get("status", "unknown"))
                 if args.publish and _receipt_success(receipt):
+                    validate_receipt_identity(receipt, metadata)
+                    assert_metadata_snapshot_fresh(metadata)
                     live_validation = verify_live_receipt(
                         receipt,
                         source=source,
@@ -1637,6 +1921,11 @@ def parse_args() -> argparse.Namespace:
         default=str(base / "state" / "notion-publication" / "publications.json"),
     )
 
+    approval_parser = subparsers.add_parser("validate-approval")
+    approval_parser.add_argument("--base", default=str(base))
+    approval_parser.add_argument("--request", type=Path, required=True)
+    approval_parser.add_argument("--approval-file", type=Path, required=True)
+
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--base", default=str(base))
     run_parser.add_argument(
@@ -1658,6 +1947,7 @@ def parse_args() -> argparse.Namespace:
     mode = run_parser.add_mutually_exclusive_group()
     mode.add_argument("--preflight", action="store_true")
     mode.add_argument("--publish", action="store_true")
+    run_parser.add_argument("--approval-file", type=Path)
     return parser.parse_args()
 
 
@@ -1702,6 +1992,14 @@ def main() -> int:
                 indent=2,
             )
         )
+        return 0
+    if args.command == "validate-approval":
+        validate_approval_file(
+            args.approval_file.expanduser(),
+            args.request.expanduser(),
+            base=Path(args.base).resolve(),
+        )
+        print(json.dumps({"status": "approval-valid"}, ensure_ascii=False))
         return 0
     if args.limit < 1:
         print("--limit must be at least 1", file=sys.stderr)

@@ -20,6 +20,20 @@ MEETING_FACT_CHECK_DIR="${MEETING_FACT_CHECK_DIR:-}"
 FORCE=0
 DRY_RUN=0
 ONLY=""
+staged_note=""
+staged_fact_check_dir=""
+
+cleanup_staged_outputs() {
+  if [ -n "$staged_note" ]; then
+    rm -f "$staged_note"
+  fi
+  if [ -n "$staged_fact_check_dir" ] && [ -d "$staged_fact_check_dir" ]; then
+    find "$staged_fact_check_dir" -maxdepth 1 -type f -delete
+    rmdir "$staged_fact_check_dir" 2>/dev/null || true
+  fi
+}
+
+trap cleanup_staged_outputs EXIT
 
 usage() {
   cat <<'USAGE'
@@ -104,6 +118,35 @@ backup_note() {
   echo "backed up existing note: $backup_dir/$name.md"
 }
 
+canonicalize_fact_check_note_path() {
+  local fact_check_json="$1"
+  local canonical_note="$2"
+  python3 - "$fact_check_json" "$canonical_note" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+result_path = Path(sys.argv[1])
+canonical_note = str(Path(sys.argv[2]).resolve())
+result = json.loads(result_path.read_text(encoding="utf-8"))
+result["note_path"] = canonical_note
+temporary = None
+with tempfile.NamedTemporaryFile(
+    "w", encoding="utf-8", dir=result_path.parent, prefix=f".{result_path.name}.", delete=False
+) as stream:
+    json.dump(result, stream, ensure_ascii=False, indent=2)
+    stream.write("\n")
+    temporary = Path(stream.name)
+try:
+    os.replace(temporary, result_path)
+finally:
+    if temporary is not None and temporary.exists():
+        temporary.unlink()
+PY
+}
+
 emit_previous_note_context() {
   local proj="$1"
   local current_name="$2"
@@ -122,6 +165,7 @@ emit_previous_note_context() {
   tmp="$(mktemp)"
   find "$out_dir" -maxdepth 1 -type f -name '*.md' \
     ! -name "$current_name.md" \
+    ! -name '.*.candidate.*' \
     ! -name '*_readable.md' \
     ! -name '*_notion-readable.md' \
     -print \
@@ -224,7 +268,6 @@ for proj in "${PROJECTS[@]}"; do
   in_dir="$TRANSCRIPT_DIR/$proj"
   out_dir="$NOTES_DIR/$proj"
   [ -d "$in_dir" ] || continue
-  mkdir -p "$out_dir"
 
   for transcript in "$in_dir"/*.txt; do
     name="$(basename "$transcript" .txt)"
@@ -232,6 +275,10 @@ for proj in "${PROJECTS[@]}"; do
       continue
     fi
     out="$out_dir/$name.md"
+    had_existing_note=0
+    if [ -f "$out" ]; then
+      had_existing_note=1
+    fi
     note_transcript="$transcript"
     correction_manifest="$TRANSCRIPT_CORRECTION_DIR/$proj/$name.json"
     corrected_transcript="$CORRECTED_TRANSCRIPT_DIR/$proj/$name.txt"
@@ -271,12 +318,13 @@ for proj in "${PROJECTS[@]}"; do
       continue
     fi
 
-    if [ -f "$out" ] && [ "$FORCE" -eq 1 ]; then
-      backup_note "$proj" "$name" "$out"
-      overwritten=$((overwritten + 1))
-    fi
-
     echo "making notes: $proj/$name"
+
+    mkdir -p "$out_dir"
+    staged_note="$(mktemp "$out_dir/.${name}.candidate.XXXXXX")"
+    fact_check_dir="$MEETING_FACT_CHECK_DIR/$proj"
+    mkdir -p "$fact_check_dir"
+    staged_fact_check_dir="$(mktemp -d "$fact_check_dir/.${name}.candidate.XXXXXX")"
 
     {
       cat <<'PROMPT'
@@ -442,25 +490,45 @@ WDC_CONTEXT
 TAIL
       cat "$note_transcript"
     } | "$BASE/sh/run-note-llm.sh" \
-        --out "$out"
+        --out "$staged_note"
 
-    fact_check_json="$MEETING_FACT_CHECK_DIR/$proj/$name.json"
+    fact_check_json="$staged_fact_check_dir/$name.json"
     if [ "$MEETING_FACT_CHECK" != "0" ]; then
       "$MEETING_FACT_CHECK_RUNNER" \
-        --note "$out" \
+        --note "$staged_note" \
         --transcript "$note_transcript" \
         --audio "$BASE/audio/$proj/$name.m4a" \
         --out-json "$fact_check_json"
     else
       python3 "$BASE/sh/meeting_fact_check.py" fallback \
-        --note "$out" \
+        --note "$staged_note" \
         --transcript "$note_transcript" \
         --output "$fact_check_json" \
         --reason "설정에서 객관 명제 팩트체크가 비활성화됨"
     fi
-    python3 "$BASE/sh/validate_meeting_note.py" "$out"
+    if [ ! -s "$fact_check_json" ]; then
+      echo "objective fact-check result missing: $fact_check_json" >&2
+      exit 1
+    fi
+    python3 "$BASE/sh/validate_meeting_note.py" "$staged_note"
+    canonicalize_fact_check_note_path "$fact_check_json" "$out"
+
+    if [ "$had_existing_note" -eq 1 ] && [ "$FORCE" -eq 1 ]; then
+      backup_note "$proj" "$name" "$out"
+    fi
+    for staged_fact_check in "$staged_fact_check_dir"/*; do
+      [ -f "$staged_fact_check" ] || continue
+      mv "$staged_fact_check" "$fact_check_dir/$(basename "$staged_fact_check")"
+    done
+    rmdir "$staged_fact_check_dir"
+    staged_fact_check_dir=""
+    mv "$staged_note" "$out"
+    staged_note=""
 
     made=$((made + 1))
+    if [ "$FORCE" -eq 1 ] && [ "$had_existing_note" -eq 1 ]; then
+      overwritten=$((overwritten + 1))
+    fi
   done
 done
 

@@ -15,9 +15,9 @@ usage() {
   cat <<'USAGE'
 Usage: notion-publication-launchd.sh <install|uninstall|restart|status|kickstart> [--dry-run]
 
-Manage the independent Notion publication worker. It watches only the
-publication queue and runs after the audio/transcript/note/review flow has
-finished and enqueued a note.
+Manage the independent local publication-preparation worker. It watches the
+publication queue after the audio/transcript/note/review flow has completed.
+Scheduled runs prepare local requests; live publication needs separate approval.
 USAGE
 }
 
@@ -62,7 +62,7 @@ write_plist() {
   <array>
     <string>/bin/bash</string>
     <string>$BASE/sh/run-notion-publication-pipeline.sh</string>
-    <string>--publish</string>
+    <string>--prepare</string>
     <string>--limit</string>
     <string>1</string>
   </array>

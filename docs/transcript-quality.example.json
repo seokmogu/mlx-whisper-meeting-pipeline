@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "thresholds": {
+    "cer": 0.2,
+    "wer": 0.3
+  },
+  "cases": [
+    {
+      "id": "synthetic-case-001",
+      "reference": "synthetic/gold-case-001.txt",
+      "hypothesis": "synthetic/hypothesis-case-001.txt",
+      "reviewed": true,
+      "reviewer": "synthetic-reviewer",
+      "evidence": "synthetic-review-record",
+      "critical": {
+        "numbers": ["10건을"],
+        "negation": ["안 됩니다."],
+        "owner": ["담당자 김가상은"],
+        "deadline": ["금요일까지"]
+      },
+      "speaker_labels": [
+        {"reference": "S1", "hypothesis": "S1"},
+        {"reference": "S2", "hypothesis": "S2"}
+      ]
+    },
+    {
+      "id": "synthetic-no-gold-yet",
+      "reviewed": false,
+      "reviewer": "",
+      "evidence": ""
+    }
+  ]
+}

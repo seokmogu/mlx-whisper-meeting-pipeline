@@ -10,7 +10,9 @@ Post-processing applied:
 """
 import argparse
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -66,6 +68,28 @@ def filter_and_merge(segments, merge_gap: float, min_chars: int):
     return merged
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    """Publish a completed transcript without exposing a partial final file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("input_json")
@@ -104,7 +128,7 @@ def main():
         spk = label(seg.get("speaker"))
         lines.append(f"[{start} - {end}] {spk}: {seg['text']}")
 
-    dst.write_text("\n".join(lines) + "\n")
+    atomic_write_text(dst, "\n".join(lines) + "\n")
     print(f"speakers mapped: {speaker_map}", file=sys.stderr)
     print(f"segments: {len(segments)} (after filter+merge)", file=sys.stderr)
 

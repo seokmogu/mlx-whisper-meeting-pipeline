@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import argparse
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -62,6 +66,100 @@ class NotionPublicationTests(unittest.TestCase):
             encoding="utf-8",
         )
         return note
+
+    def make_ready(self, base: Path, source: Path) -> Path:
+        project, stem = MODULE.canonical_note_coordinates(source, base)
+        transcript = base / "transcripts" / project / f"{stem}.txt"
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        transcript.write_text("00:00:00 화자 A: 회의 내용\n", encoding="utf-8")
+        candidate, _ = MODULE.create_readable_candidate(
+            source,
+            base=base,
+            validator=MODULE.default_validator(),
+        )
+        review_dir = MODULE.review_dir_for(source, base)
+        review_dir.mkdir(parents=True, exist_ok=True)
+        (review_dir / "review.md").write_text("complete\n", encoding="utf-8")
+        (review_dir / "review.json").write_text("{}\n", encoding="utf-8")
+        (review_dir / "wiki-update-candidates.md").write_text(
+            "complete\n", encoding="utf-8"
+        )
+        MODULE.save_json(
+            MODULE.readiness_path_for(source, base),
+            {
+                "schema_version": 1,
+                "source_path": str(source.resolve()),
+                "source_sha256": MODULE.sha256_file(source),
+                "transcript_path": str(transcript.resolve()),
+                "transcript_sha256": MODULE.sha256_file(transcript),
+                "readable_path": str(candidate.resolve()),
+                "readable_sha256": MODULE.sha256_file(candidate),
+                "review_dir": str(review_dir.resolve()),
+                "review_artifacts": {
+                    name: MODULE.sha256_file(review_dir / name)
+                    for name in (
+                        "review.md",
+                        "review.json",
+                        "wiki-update-candidates.md",
+                    )
+                },
+            },
+        )
+        return candidate
+
+    def make_approval(self, base: Path, source: Path) -> Path:
+        _metadata, _validation, request_path = MODULE.prepare(
+            source,
+            base=base,
+            validator=MODULE.default_validator(),
+            state={"files": {}},
+        )
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        approval = {
+            "approval_id": "test-approval",
+            "request_path": str(request_path.resolve()),
+            "request_sha256": MODULE.sha256_file(request_path),
+            "source_path": request["source_path"],
+            "source_sha256": request["source_sha256"],
+            "readable_path": request["readable_path"],
+            "readable_sha256": request["readable_sha256"],
+            "target_data_source_id": request["target_data_source_id"],
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+        }
+        path = base / "approval.json"
+        path.write_text(json.dumps(approval), encoding="utf-8")
+        return path
+
+    def publish_args(self, base: Path, pending: Path, state: Path, approval: Path | None):
+        return argparse.Namespace(
+            base=str(base),
+            pending_file=str(pending),
+            state=str(state),
+            limit=1,
+            only=None,
+            visibility=None,
+            preflight=False,
+            publish=True,
+            validator=str(MODULE.default_validator()),
+            agent="/not-used-in-tests",
+            approval_file=str(approval) if approval else None,
+        )
+
+    def matching_receipt(self, base: Path, source: Path) -> dict:
+        candidate = MODULE.readable_path_for(source, base)
+        fetched_body = "\n".join(
+            candidate.read_text(encoding="utf-8").splitlines()[1:]
+        ).lstrip() + "\n"
+        return {
+            "status": "created",
+            "visibility": "public",
+            "target_data_source_id": MODULE.PUBLIC_DATA_SOURCE_DEFAULT,
+            "page_id": "page-id",
+            "url": "https://example.test/page-id",
+            "title": "에이전트가 생성한 회의 제목",
+            "post_fetch_verified": True,
+            "fetched_markdown": fetched_body,
+        }
 
     def test_readable_derivative_is_date_partitioned_and_faithful(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -308,6 +406,7 @@ class NotionPublicationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             base = self.make_base(Path(temporary))
             source = self.write_note(base)
+            self.make_ready(base, source)
             pending = base / "state" / "notion-publication" / "pending.txt"
             first = MODULE.enqueue(
                 base=base,
@@ -323,14 +422,169 @@ class NotionPublicationTests(unittest.TestCase):
             self.assertEqual(second, [])
             self.assertEqual(MODULE.read_pending(pending), first)
 
+    def test_enqueue_rejects_external_or_incomplete_meeting_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = self.make_base(Path(temporary))
+            pending = base / "state" / "notion-publication" / "pending.txt"
+            external = Path(temporary) / "external.md"
+            external.write_text("# 외부 문서\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "must be under"):
+                MODULE.enqueue(
+                    base=base,
+                    pending_file=pending,
+                    files=[str(external)],
+                )
+
+            source = self.write_note(base)
+            self.make_ready(base, source)
+            (MODULE.review_dir_for(source, base) / "review.json").unlink()
+            with self.assertRaisesRegex(RuntimeError, "context review artifacts"):
+                MODULE.enqueue(
+                    base=base,
+                    pending_file=pending,
+                    files=[str(source)],
+                )
+
+    def test_enqueue_rejects_review_receipt_for_an_old_note_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = self.make_base(Path(temporary))
+            source = self.write_note(base)
+            self.make_ready(base, source)
+            source.write_text(
+                source.read_text(encoding="utf-8").replace("결론 A", "결론 B"),
+                encoding="utf-8",
+            )
+            MODULE.create_readable_candidate(
+                source,
+                base=base,
+                validator=MODULE.default_validator(),
+            )
+            with self.assertRaisesRegex(RuntimeError, "readiness receipt source_sha256"):
+                MODULE.enqueue(
+                    base=base,
+                    pending_file=base / "state" / "notion-publication" / "pending.txt",
+                    files=[str(source)],
+                )
+
+    def test_publish_requires_bound_unexpired_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = self.make_base(Path(temporary))
+            source = self.write_note(base)
+            self.make_ready(base, source)
+            pending = base / "state" / "notion-publication" / "pending.txt"
+            state = base / "state" / "notion-publication" / "publications.json"
+            MODULE.enqueue(base=base, pending_file=pending, files=[str(source)])
+            with self.assertRaisesRegex(RuntimeError, "requires --approval-file"):
+                MODULE.run_queue(self.publish_args(base, pending, state, None))
+
+            approval = self.make_approval(base, source)
+            payload = json.loads(approval.read_text(encoding="utf-8"))
+            payload["source_sha256"] = "wrong"
+            approval.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "source_sha256 does not match"):
+                MODULE.validate_approval_file(
+                    approval,
+                    MODULE.request_path_for(source, base),
+                    base=base,
+                )
+
+    def test_publish_agent_cannot_bypass_the_approval_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = self.make_base(Path(temporary))
+            source = self.write_note(base)
+            self.make_ready(base, source)
+            _metadata, _validation, request = MODULE.prepare(
+                source,
+                base=base,
+                validator=MODULE.default_validator(),
+                state={"files": {}},
+            )
+            result = subprocess.run(
+                [
+                    str(REPO / "sh" / "run-notion-publish-agent.sh"),
+                    "--request",
+                    str(request),
+                    "--receipt",
+                    str(base / "receipt.json"),
+                    "--publish",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "MEETING_BASE_DIR": str(base)},
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("requires --approval-file", result.stderr)
+
+    def test_publish_rejects_receipt_identity_mismatch_and_keeps_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = self.make_base(Path(temporary))
+            source = self.write_note(base)
+            self.make_ready(base, source)
+            pending = base / "state" / "notion-publication" / "pending.txt"
+            state = base / "state" / "notion-publication" / "publications.json"
+            MODULE.enqueue(base=base, pending_file=pending, files=[str(source)])
+            approval = self.make_approval(base, source)
+            original = MODULE.invoke_agent
+
+            def wrong_target(*_args, **_kwargs):
+                receipt = self.matching_receipt(base, source)
+                receipt["target_data_source_id"] = "wrong-target"
+                return receipt
+
+            MODULE.invoke_agent = wrong_target
+            try:
+                self.assertEqual(
+                    MODULE.run_queue(self.publish_args(base, pending, state, approval)),
+                    1,
+                )
+            finally:
+                MODULE.invoke_agent = original
+            self.assertEqual(
+                MODULE.read_pending(pending),
+                ["notes/worxphere/20260820_100000.md"],
+            )
+
+    def test_publish_rejects_source_drift_and_keeps_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = self.make_base(Path(temporary))
+            source = self.write_note(base)
+            self.make_ready(base, source)
+            pending = base / "state" / "notion-publication" / "pending.txt"
+            state = base / "state" / "notion-publication" / "publications.json"
+            MODULE.enqueue(base=base, pending_file=pending, files=[str(source)])
+            approval = self.make_approval(base, source)
+            original = MODULE.invoke_agent
+
+            def mutate_source(*_args, **_kwargs):
+                receipt = self.matching_receipt(base, source)
+                source.write_text(
+                    source.read_text(encoding="utf-8").replace("결론 A", "결론 B"),
+                    encoding="utf-8",
+                )
+                return receipt
+
+            MODULE.invoke_agent = mutate_source
+            try:
+                self.assertEqual(
+                    MODULE.run_queue(self.publish_args(base, pending, state, approval)),
+                    1,
+                )
+            finally:
+                MODULE.invoke_agent = original
+            self.assertEqual(
+                MODULE.read_pending(pending),
+                ["notes/worxphere/20260820_100000.md"],
+            )
+
     def test_request_contains_target_specific_route_without_source_rewrite(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = self.make_base(Path(temporary))
             source = self.write_note(base)
-            candidate, validation = MODULE.create_readable_candidate(
-                source,
-                base=base,
-                validator=MODULE.default_validator(),
+            candidate = self.make_ready(base, source)
+            validation = MODULE.validate_projection(
+                source.read_text(encoding="utf-8"),
+                candidate.read_text(encoding="utf-8"),
             )
             metadata = MODULE.build_metadata(source, candidate, base=base)
             self.assertTrue(validation["faithful"])
@@ -480,6 +734,7 @@ class NotionPublicationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             base = self.make_base(Path(temporary))
             source = self.write_note(base)
+            self.make_ready(base, source)
             title = (
                 base
                 / "state"
@@ -509,6 +764,40 @@ class NotionPublicationTests(unittest.TestCase):
             )
             self.assertEqual(added, ["notes/worxphere/20260820_100000.md"])
             self.assertEqual(MODULE.read_pending(pending), added)
+
+    def test_reconcile_requeues_a_published_note_after_source_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = self.make_base(Path(temporary))
+            source = self.write_note(base)
+            self.make_ready(base, source)
+            previous_hash = MODULE.sha256_file(source)
+            state = base / "state" / "notion-publication" / "publications.json"
+            MODULE.save_json(
+                state,
+                {
+                    "files": {
+                        "notes/worxphere/20260820_100000.md": {
+                            "source_label": source.stem,
+                            "visibility": "public",
+                            "author_name": MODULE.publication_author_name(),
+                            "author_user_id": MODULE.publication_author_user_id(),
+                            "source_sha256": previous_hash,
+                        }
+                    }
+                },
+            )
+            source.write_text(
+                source.read_text(encoding="utf-8").replace("결론 A", "결론 B"),
+                encoding="utf-8",
+            )
+            self.make_ready(base, source)
+            pending = base / "state" / "notion-publication" / "pending.txt"
+            added = MODULE.reconcile_changed_labels(
+                base=base,
+                pending_file=pending,
+                state_path=state,
+            )
+            self.assertEqual(added, ["notes/worxphere/20260820_100000.md"])
 
     def test_updated_receipt_is_success_only_after_fresh_fetch_flag(self) -> None:
         receipt = {

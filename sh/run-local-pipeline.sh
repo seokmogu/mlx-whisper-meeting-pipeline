@@ -24,13 +24,15 @@ Runs the local Voice Memos pipeline:
   7. generate Markdown meeting notes
   8. render date-partitioned human-review Markdown and optional SVG
   9. generate meeting context review artifacts
+ 10. retain incomplete jobs for retry and enqueue only completed notes
 
 Options:
   --dry-run   Report what would run without copying, transcribing, writing notes, or generating reviews.
   --force-notes
               Regenerate existing meeting notes with backup, then regenerate matching reviews.
   --only TARGET
-              Restrict note/review regeneration to NAME, PROJECT/NAME, NAME.md, or PROJECT/NAME.md.
+              Restrict note/review work to NAME, PROJECT/NAME, NAME.md, or PROJECT/NAME.md.
+              An existing target retries its preview/review without regenerating the note.
   -h, --help  Show this help.
 USAGE
 }
@@ -65,15 +67,33 @@ if [ "$DRY_RUN" -eq 0 ]; then
   exec >> "$LOG" 2>&1
   echo "=== $(date '+%Y-%m-%d %H:%M:%S') local pipeline triggered ==="
 
-  if [ -e "$LOCK" ]; then
-    pid="$(cat "$LOCK" 2>/dev/null || echo "")"
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      echo "another local pipeline instance running (pid=$pid), exit"
+  # FD 9 remains open in this shell, retaining the helper's flock. Never unlink
+  # the inode: a contender must lock the same file, even after a stale PID.
+  exec 9>>"$LOCK"
+  if python3 - "$$" <<'PY'
+import fcntl
+import os
+import sys
+
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    raise SystemExit(75)
+os.ftruncate(9, 0)
+os.write(9, (sys.argv[1] + "\n").encode())
+PY
+  then
+    trap 'exec 9>&-' EXIT
+  else
+    lock_status=$?
+    exec 9>&-
+    if [ "$lock_status" -eq 75 ]; then
+      echo "another local pipeline instance holds the lock, exit"
       exit 0
     fi
+    echo "cannot acquire local pipeline lock" >&2
+    exit "$lock_status"
   fi
-  echo $$ > "$LOCK"
-  trap 'rm -f "$LOCK"' EXIT
 else
   echo "=== $(date '+%Y-%m-%d %H:%M:%S') local pipeline dry-run ==="
 fi
@@ -86,57 +106,19 @@ read -r -a PROJECTS <<<"${MEETING_PROJECTS:-worxphere}"
 REVIEWER_DIR="${MEETING_CONTEXT_REVIEWER_DIR:-$(cd "$BASE/.." && pwd)/meeting-context-reviewer}"
 REVIEW_PROFILE="${MEETING_REVIEW_PROFILE:-profiles/ax-os}"
 
-before_notes="$(mktemp)"
-after_notes="$(mktemp)"
-new_notes="$(mktemp)"
 sync_output="$(mktemp)"
 manual_output="$(mktemp)"
 prepare_output="$(mktemp)"
-review_targets_temp=""
 if [ "$DRY_RUN" -eq 0 ]; then
-  trap 'rm -f "$LOCK" "$before_notes" "$after_notes" "$new_notes" "$sync_output" "$manual_output" "$prepare_output" "$review_targets_temp"' EXIT
+  trap 'rm -f "$sync_output" "$manual_output" "$prepare_output"; exec 9>&-' EXIT
 else
-  trap 'rm -f "$before_notes" "$after_notes" "$new_notes" "$sync_output" "$manual_output" "$prepare_output" "$review_targets_temp"' EXIT
+  trap 'rm -f "$sync_output" "$manual_output" "$prepare_output"' EXIT
 fi
 
-list_notes() {
-  for proj in "${PROJECTS[@]}"; do
-    find "$BASE/notes/$proj" -maxdepth 1 -type f -name '*.md' 2>/dev/null || true
-  done | sort
-}
-
-normalize_target() {
-  local target="$1"
-  target="${target%.txt}"
-  target="${target%.md}"
-  echo "$target"
-}
-
-review_stem() {
-  local name="$1"
-  printf '%s' "$name" | sed -E 's/[[:space:]]+/_/g; s/_+/_/g; s/^_//; s/_$//'
-}
-
-matches_only() {
-  local proj="$1"
-  local name="$2"
-  [ -z "$ONLY" ] && return 0
-  local target
-  target="$(normalize_target "$ONLY")"
-  [ "$target" = "$name" ] || [ "$target" = "$proj/$name" ]
-}
-
-list_matching_notes() {
-  for proj in "${PROJECTS[@]}"; do
-    for note in "$BASE/notes/$proj"/*.md; do
-      [ -e "$note" ] || continue
-      name="$(basename "$note" .md)"
-      if matches_only "$proj" "$name"; then
-        echo "$note"
-      fi
-    done
-  done | sort
-}
+completion_command=(python3 "$BASE/sh/complete_local_notes.py"
+  --base "$BASE" --reviewer "$REVIEWER_DIR" --profile "$REVIEW_PROFILE")
+[ "$FORCE_NOTES" -eq 1 ] && completion_command+=(--force-notes)
+[ -n "$ONLY" ] && completion_command+=(--only "$ONLY")
 
 refresh_meeting_identity_context() {
   local mode="${1:-write}"
@@ -156,8 +138,6 @@ refresh_meeting_identity_context() {
   fi
 }
 
-list_notes > "$before_notes"
-
 if [ "$DRY_RUN" -eq 1 ]; then
   refresh_meeting_identity_context dry-run
   "$BASE/sh/sync-voice-memos.sh" --dry-run | tee "$sync_output"
@@ -171,26 +151,14 @@ else
 fi
 
 unprocessed=0
-matching_transcripts=0
 for proj in "${PROJECTS[@]}"; do
   for audio in "$BASE/audio/$proj"/*.m4a; do
     [ -e "$audio" ] || continue
     name="$(basename "$audio" .m4a)"
-    [ -f "$BASE/notes/$proj/$name.md" ] || unprocessed=$((unprocessed + 1))
-  done
-  for transcript in "$BASE/transcripts/$proj"/*.txt; do
-    [ -e "$transcript" ] || continue
-    name="$(basename "$transcript" .txt)"
-    if matches_only "$proj" "$name"; then
-      matching_transcripts=$((matching_transcripts + 1))
-    fi
+    [ -f "$BASE/transcripts/$proj/$name.txt" ] || unprocessed=$((unprocessed + 1))
   done
 done
-
-if [ "$unprocessed" -eq 0 ] && { [ "$FORCE_NOTES" -eq 0 ] || [ "$matching_transcripts" -eq 0 ]; }; then
-  echo "no unprocessed audio, exit"
-  exit 0
-fi
+pending_jobs="$("${completion_command[@]}" --has-work)"
 
 if [ "$DRY_RUN" -eq 1 ]; then
   routed_from_sync="$(awk -F'routed: ' '/routed: / {split($2, a, ","); value=a[1]} END {print value + 0}' "$sync_output")"
@@ -214,9 +182,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   if [ "$rejected_audio" -gt 0 ]; then
     echo "dry-run: $rejected_audio obvious silence/too-short audio file(s) would be quarantined"
   fi
-  if [ "$FORCE_NOTES" -eq 1 ]; then
-    echo "dry-run: $matching_transcripts transcript file(s) would be regenerated into notes with backup"
-  fi
+  "${completion_command[@]}" --dry-run
   if [ "${MEETING_TRANSCRIPT_CORRECTION:-1}" != "0" ]; then
     correction_dry_args=(--dry-run)
     [ "$FORCE_NOTES" -eq 1 ] && correction_dry_args+=(--force)
@@ -228,9 +194,14 @@ if [ "$DRY_RUN" -eq 1 ]; then
     fi
   fi
   echo "dry-run: date-partitioned Notion-readable previews would be generated for completed notes"
-  echo "dry-run: meeting context reviews would be generated for newly created notes"
+  echo "dry-run: meeting context reviews would be generated for new or incomplete jobs"
   echo "dry-run: completed notes would be registered for a separate Notion publication decision"
   echo "dry-run: no audio copied, transcripts written, notes generated, or reviews generated"
+  exit 0
+fi
+
+if [ "$unprocessed" -eq 0 ] && [ "$pending_jobs" -eq 0 ]; then
+  echo "no unprocessed audio or pending note/review jobs, exit"
   exit 0
 fi
 
@@ -254,70 +225,13 @@ if [ "${MEETING_TRANSCRIPT_CORRECTION:-1}" != "0" ]; then
   fi
 fi
 
-make_notes_args=()
-if [ "$FORCE_NOTES" -eq 1 ]; then
-  make_notes_args+=(--force)
-fi
-if [ -n "$ONLY" ]; then
-  make_notes_args+=(--only "$ONLY")
-fi
-if [ "$FORCE_NOTES" -eq 1 ] || [ -n "$ONLY" ]; then
-  "$BASE/sh/make-notes.sh" "${make_notes_args[@]}"
-else
-  "$BASE/sh/make-notes.sh"
-fi
-
-list_notes > "$after_notes"
-comm -13 "$before_notes" "$after_notes" > "$new_notes"
-
-review_targets="$new_notes"
-if [ "$FORCE_NOTES" -eq 1 ]; then
-  review_targets_temp="$(mktemp)"
-  list_matching_notes > "$review_targets_temp"
-  review_targets="$review_targets_temp"
-fi
-
-if [ ! -s "$review_targets" ]; then
-  echo "no new notes generated"
-  exit 0
-fi
-
-echo "rendering local human-review meeting notes..."
-python3 "$BASE/sh/notion_publication.py" render \
-  --base "$BASE" \
-  --file-list "$review_targets"
-
-echo "refreshing meeting identity context with newly completed notes..."
+echo "completing durable note/review jobs..."
+completion_status=0
+"${completion_command[@]}" || completion_status=$?
 refresh_meeting_identity_context
-
-if [ ! -d "$REVIEWER_DIR" ]; then
-  echo "meeting-context-reviewer not found: $REVIEWER_DIR"
-  exit 0
+if [ "$completion_status" -ne 0 ]; then
+  echo "local pipeline incomplete; pending jobs retained for retry" >&2
+  exit "$completion_status"
 fi
-
-echo "generating meeting context reviews..."
-while IFS= read -r note; do
-  [ -n "$note" ] || continue
-  stem="$(review_stem "$(basename "$note" .md)")"
-  out_dir="$REVIEWER_DIR/reviews/$stem"
-  (
-    cd "$REVIEWER_DIR"
-    review_args=(
-      --profile "$REVIEW_PROFILE"
-      --meeting "$note"
-      --out "$out_dir"
-    )
-    if [ -s "$BASE/glossary/employee_roster.tsv" ]; then
-      review_args+=(--employee-roster "$BASE/glossary/employee_roster.tsv")
-    fi
-    uv run meeting-context-reviewer review "${review_args[@]}"
-  )
-done < "$review_targets"
-
-echo "registering completed notes for a separate Notion publication decision..."
-python3 "$BASE/sh/notion_publication.py" enqueue \
-  --base "$BASE" \
-  --pending-file "$BASE/state/notion-publication/pending.txt" \
-  --file-list "$review_targets"
 
 echo "=== local pipeline done ==="

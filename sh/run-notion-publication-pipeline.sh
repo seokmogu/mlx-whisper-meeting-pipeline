@@ -9,18 +9,21 @@ MODE="prepare"
 LIMIT=1
 ONLY=""
 VISIBILITY=""
+APPROVAL_FILE=""
 
 usage() {
   cat <<'USAGE'
-Usage: run-notion-publication-pipeline.sh [--prepare|--preflight|--publish] [--limit N] [--only NOTE] [--visibility public|private]
+Usage: run-notion-publication-pipeline.sh [--prepare|--preflight|--publish] [--limit N] [--only NOTE] [--visibility public|private] [--approval-file FILE]
 
 Runs the separate publication-decision flow. The local meeting pipeline already
-creates the date-partitioned readable preview. The default mode refreshes that
-local preview without touching Notion.
+creates the date-partitioned readable preview. The default mode validates those
+completed artifacts and prepares a request without touching Notion.
 
-  --prepare    Refresh local readable preview and routing request only (default)
+  --prepare    Validate reviewed artifacts and prepare a routing request (default)
   --preflight  Also fetch the routed Notion data source; no Notion write
-  --publish    Create at most --limit verified pages through Codex Notion MCP
+  --publish    Publish one explicitly approved page through Codex Notion MCP
+  --approval-file FILE
+               Required only for --publish; binds one exact prepared request
   --limit N    Process newest pending notes first (default: 1)
   --only NOTE  Restrict processing to one queued note path
   --visibility Process only notes with explicit matching visibility metadata
@@ -50,6 +53,10 @@ while [ "$#" -gt 0 ]; do
       VISIBILITY="${2:?--visibility requires public or private}"
       shift
       ;;
+    --approval-file)
+      APPROVAL_FILE="${2:?--approval-file requires a file}"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -69,6 +76,14 @@ if ! [[ "$LIMIT" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [ -n "$VISIBILITY" ] && [ "$VISIBILITY" != "public" ] && [ "$VISIBILITY" != "private" ]; then
   echo "--visibility must be public or private" >&2
+  exit 2
+fi
+if [ "$MODE" = "publish" ] && [ -z "$APPROVAL_FILE" ]; then
+  echo "--publish requires --approval-file" >&2
+  exit 2
+fi
+if [ "$MODE" = "publish" ] && [ "$LIMIT" -ne 1 ]; then
+  echo "--publish requires --limit 1 and one exact approval file" >&2
   exit 2
 fi
 
@@ -106,6 +121,9 @@ if [ -n "$ONLY" ]; then
 fi
 if [ -n "$VISIBILITY" ]; then
   args+=(--visibility "$VISIBILITY")
+fi
+if [ -n "$APPROVAL_FILE" ]; then
+  args+=(--approval-file "$APPROVAL_FILE")
 fi
 case "$MODE" in
   preflight) args+=(--preflight) ;;

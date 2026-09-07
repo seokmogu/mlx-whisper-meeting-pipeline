@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -51,6 +52,16 @@ def main() -> int:
         audio_dir = base / "audio" / project
         if not audio_dir.exists():
             continue
+
+        pending_transactions = _merge_transaction_manifests(base, project)
+        if pending_transactions:
+            if args.dry_run:
+                print(
+                    f"dry-run: {len(pending_transactions)} pending merge transaction(s) for {project} "
+                    "would recover before queue preparation; skipping this project's queue"
+                )
+                continue
+            _recover_merge_transactions(base, project, pending_transactions)
 
         candidates = [
             item
@@ -202,32 +213,40 @@ def _trim_outer_silence(
             True,
         )
 
-    temp = item.path.with_suffix(item.path.suffix + ".trim.tmp.m4a")
+    staging_dir = target.parent / ".trim-staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    temp = staging_dir / f".{target.name}.tmp.m4a"
     temp.unlink(missing_ok=True)
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-ss",
-            f"{window.start:.3f}",
-            "-to",
-            f"{window.end:.3f}",
-            "-i",
-            str(item.path),
-            "-vn",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            str(temp),
-        ],
-        check=True,
-    )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(item.path), target)
-    shutil.move(str(temp), item.path)
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{window.start:.3f}",
+                "-to",
+                f"{window.end:.3f}",
+                "-i",
+                str(item.path),
+                "-vn",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                str(temp),
+            ],
+            check=True,
+        )
+        # Keep the original at its active path until the replacement is ready
+        # to publish. A failed publish therefore leaves a retryable input
+        # rather than an invisible meeting under state/.
+        shutil.copy2(item.path, target)
+        os.replace(temp, item.path)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
     print(
         "trimmed outer non-speech: "
         f"{item.project}/{item.path.name} keep {window.start:.2f}s..{window.end:.2f}s "
@@ -354,17 +373,40 @@ def _merge_group(base: Path, group: list[AudioItem], *, dry_run: bool) -> None:
         print(f"dry-run merge adjacent audio: {project}/[{names}] -> {target.relative_to(base)}")
         return
 
+    backup_dir = base / "state" / "audio-segments" / project / target.stem
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stage = backup_dir / ".merged.stage.m4a"
+    stage.unlink(missing_ok=True)
+    entries = [
+        {
+            "source_name": item.path.name,
+            "backup_name": _unique_path(backup_dir / item.path.name).name,
+        }
+        for item in group
+    ]
+    manifest = backup_dir / "merge-transaction.json"
+    _write_merge_manifest(
+        manifest,
+        {
+            "version": 1,
+            "phase": "building",
+            "target_name": target.name,
+            "stage_name": stage.name,
+            "sources": entries,
+        },
+    )
+
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as list_file:
         list_path = Path(list_file.name)
         for item in group:
             list_file.write(f"file '{_ffmpeg_concat_escape(item.path)}'\n")
     try:
         copy_result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(list_path), "-c", "copy", str(target)],
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(list_path), "-c", "copy", str(stage)],
             check=False,
         )
         if copy_result.returncode != 0:
-            target.unlink(missing_ok=True)
+            stage.unlink(missing_ok=True)
             subprocess.run(
                 [
                     "ffmpeg",
@@ -381,18 +423,109 @@ def _merge_group(base: Path, group: list[AudioItem], *, dry_run: bool) -> None:
                     "aac",
                     "-b:a",
                     "128k",
-                    str(target),
+                    str(stage),
                 ],
                 check=True,
             )
     finally:
         list_path.unlink(missing_ok=True)
 
-    backup_dir = base / "state" / "audio-segments" / project / target.stem
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    for item in group:
-        shutil.move(str(item.path), _unique_path(backup_dir / item.path.name))
+    _write_merge_manifest(
+        manifest,
+        {
+            "version": 1,
+            "phase": "staged",
+            "target_name": target.name,
+            "stage_name": stage.name,
+            "sources": entries,
+        },
+    )
+    _finish_merge_transaction(base, project, backup_dir, manifest)
     print(f"merged adjacent audio: {project}/[{names}] -> {target.relative_to(base)}; originals -> {backup_dir.relative_to(base)}")
+
+
+def _merge_transaction_manifests(base: Path, project: str) -> list[Path]:
+    root = base / "state" / "audio-segments" / project
+    if not root.exists():
+        return []
+    return sorted(root.glob("*/merge-transaction.json"))
+
+
+def _recover_merge_transactions(base: Path, project: str, manifests: list[Path] | None = None) -> None:
+    for manifest in manifests if manifests is not None else _merge_transaction_manifests(base, project):
+        backup_dir = manifest.parent
+        payload = _read_merge_manifest(manifest)
+        phase = payload["phase"]
+        stage = backup_dir / payload["stage_name"]
+        if phase == "building":
+            # No source has moved in this phase. Drop an incomplete derivative
+            # and let the next normal queue pass build it again from originals.
+            stage.unlink(missing_ok=True)
+            manifest.unlink()
+            continue
+        _finish_merge_transaction(base, project, backup_dir, manifest, payload)
+
+
+def _finish_merge_transaction(
+    base: Path,
+    project: str,
+    backup_dir: Path,
+    manifest: Path,
+    payload: dict | None = None,
+) -> None:
+    payload = payload or _read_merge_manifest(manifest)
+    if payload["phase"] != "staged":
+        raise RuntimeError(f"unsupported merge transaction phase: {payload['phase']}")
+    target = base / "audio" / project / payload["target_name"]
+    stage = backup_dir / payload["stage_name"]
+    if not target.exists() and not stage.exists():
+        raise RuntimeError(f"merge transaction lost staged output: {manifest}")
+    for entry in payload["sources"]:
+        source = base / "audio" / project / entry["source_name"]
+        backup = backup_dir / entry["backup_name"]
+        if backup.exists():
+            continue
+        if not source.exists():
+            raise RuntimeError(f"merge transaction lost source: {source}")
+        shutil.move(str(source), backup)
+    if not target.exists():
+        os.replace(stage, target)
+    manifest.unlink()
+
+
+def _read_merge_manifest(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid merge transaction: {path}") from exc
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != 1
+        or payload.get("phase") not in {"building", "staged"}
+        or not _safe_filename(payload.get("target_name"))
+        or not _safe_filename(payload.get("stage_name"))
+        or not isinstance(payload.get("sources"), list)
+        or not payload["sources"]
+    ):
+        raise RuntimeError(f"invalid merge transaction: {path}")
+    for entry in payload["sources"]:
+        if (
+            not isinstance(entry, dict)
+            or not _safe_filename(entry.get("source_name"))
+            or not _safe_filename(entry.get("backup_name"))
+        ):
+            raise RuntimeError(f"invalid merge transaction: {path}")
+    return payload
+
+
+def _safe_filename(value: object) -> bool:
+    return isinstance(value, str) and bool(value) and Path(value).name == value
+
+
+def _write_merge_manifest(path: Path, payload: dict) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def _unique_path(path: Path) -> Path:

@@ -6,13 +6,15 @@ BASE="${MEETING_BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 REQUEST=""
 RECEIPT=""
 MODE=""
+APPROVAL_FILE=""
 
 usage() {
   cat <<'USAGE'
-Usage: run-notion-publish-agent.sh --request FILE --receipt FILE <--preflight|--publish>
+Usage: run-notion-publish-agent.sh --request FILE --receipt FILE <--preflight|--publish> [--approval-file FILE]
 
 Uses the configured Codex OAuth Notion MCP connection. Preflight is read-only;
 publish may create one page and must re-fetch it before returning success.
+Live publish also requires an unexpired approval file bound to this exact request.
 USAGE
 }
 
@@ -31,6 +33,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --publish)
       MODE="publish"
+      ;;
+    --approval-file)
+      APPROVAL_FILE="${2:?--approval-file requires a file}"
+      shift
       ;;
     -h|--help)
       usage
@@ -52,6 +58,16 @@ fi
 if [ ! -s "$REQUEST" ]; then
   echo "publication request not found: $REQUEST" >&2
   exit 1
+fi
+if [ "$MODE" = "publish" ]; then
+  if [ -z "$APPROVAL_FILE" ]; then
+    echo "live publish requires --approval-file" >&2
+    exit 2
+  fi
+  python3 "$SCRIPT_DIR/notion_publication.py" validate-approval \
+    --base "$BASE" \
+    --request "$REQUEST" \
+    --approval-file "$APPROVAL_FILE"
 fi
 
 CODEX_BIN="${CODEX_BIN:-codex}"

@@ -71,6 +71,7 @@ VOICE_MEMO_DEFAULT_PROJECT="${VOICE_MEMO_DEFAULT_PROJECT:-}"
 VOICE_MEMO_USE_SEEN_STATE="${VOICE_MEMO_USE_SEEN_STATE:-0}"
 VOICE_MEMO_SEEN_FILE="${VOICE_MEMO_SEEN_FILE:-$BASE/state/voice-memos-seen.txt}"
 VOICE_MEMO_TITLE_DIR="${VOICE_MEMO_TITLE_DIR:-$BASE/state/voice-memo-titles}"
+VOICE_MEMO_SOURCE_MAP_DIR="${VOICE_MEMO_SOURCE_MAP_DIR:-$BASE/state/voice-memo-sources}"
 
 if [ "$DRY_RUN" -eq 0 ]; then
   mkdir -p "$DST_BASE/unsorted"
@@ -137,9 +138,91 @@ exists_in_project() {
   return 1
 }
 
+target_in_use() {
+  local name="$1"
+  exists_in_project "$name" || [ -e "$DST_BASE/unsorted/$name" ]
+}
+
 filesystem_name() {
   local name="$1"
   printf '%s' "$name" | sed -E 's/[[:space:]]+/_/g; s/_+/_/g; s/^_//; s/_$//'
+}
+
+source_id() {
+  local name="$1"
+  printf '%s' "$name" | (shasum -a 256 2>/dev/null || sha256sum) | awk '{print $1}'
+}
+
+source_map_path() {
+  local name="$1"
+  printf '%s/%s.target' "$VOICE_MEMO_SOURCE_MAP_DIR" "$(source_id "$name")"
+}
+
+mapped_target_name() {
+  local name="$1" map value
+  map="$(source_map_path "$name")"
+  [ -f "$map" ] || return 1
+  value="$(cat "$map")"
+  [ -n "$value" ] && [ "$(basename "$value")" = "$value" ] || return 1
+  printf '%s\n' "$value"
+}
+
+target_has_mapping() {
+  local target_name="$1" map
+  [ -d "$VOICE_MEMO_SOURCE_MAP_DIR" ] || return 1
+  while IFS= read -r -d '' map; do
+    grep -Fxq "$target_name" "$map" && return 0
+  done < <(find "$VOICE_MEMO_SOURCE_MAP_DIR" -maxdepth 1 -type f -name '*.target' -print0)
+  return 1
+}
+
+resolve_target_name() {
+  local name="$1" normalized mapped stem ext source candidate i
+  if mapped="$(mapped_target_name "$name")"; then
+    printf '%s\n' "$mapped"
+    return
+  fi
+  normalized="$(filesystem_name "$name")"
+  if ! target_in_use "$normalized"; then
+    printf '%s\n' "$normalized"
+    return
+  fi
+  # Legacy recordings without a source map keep their old identity when their
+  # source filename did not need normalization. Ambiguous normalized names use
+  # a deterministic source-derived suffix so no recording is suppressed.
+  if [ "$name" = "$normalized" ] && ! target_has_mapping "$normalized"; then
+    printf '%s\n' "$normalized"
+    return
+  fi
+  stem="${normalized%.*}"
+  ext="${normalized##*.}"
+  source="$(source_id "$name")"
+  candidate="$stem-source-${source:0:12}.$ext"
+  i=1
+  while target_in_use "$candidate"; do
+    candidate="$stem-source-${source:0:12}-$i.$ext"
+    i=$((i + 1))
+  done
+  printf '%s\n' "$candidate"
+}
+
+write_source_mapping() {
+  local name="$1" target_name="$2" map temporary
+  map="$(source_map_path "$name")"
+  [ -f "$map" ] && return
+  mkdir -p "$VOICE_MEMO_SOURCE_MAP_DIR"
+  temporary="$(mktemp "$VOICE_MEMO_SOURCE_MAP_DIR/.source-map.XXXXXX")"
+  TMP_FILES+=("$temporary")
+  printf '%s\n' "$target_name" > "$temporary"
+  mv "$temporary" "$map"
+}
+
+copy_recording() {
+  local source="$1" target="$2" temporary
+  temporary="$(mktemp "$(dirname "$target")/.voice-memo-copy.XXXXXX")"
+  TMP_FILES+=("$temporary")
+  cp -p "$source" "$temporary"
+  mv "$temporary" "$target"
 }
 
 write_voice_memo_title() {
@@ -226,14 +309,17 @@ write_recording_list "$recording_list"
 
 while IFS= read -r -d '' file; do
   name="$(basename "$file")"
-  target_name="$(filesystem_name "$name")"
   label="$(lookup_label "$name")"
   sub="$(classify "$label")"
-  write_voice_memo_title "$sub" "$target_name" "$label"
   if seen_enabled && seen_contains "$name"; then
+    # Older seen-state files predate source mappings. Preserve their existing
+    # title filename rather than inferring a new collision suffix while skip.
+    target_name="$(mapped_target_name "$name" || filesystem_name "$name")"
+    write_voice_memo_title "$sub" "$target_name" "$label"
     skipped=$((skipped + 1))
     continue
   fi
+  target_name="$(resolve_target_name "$name")"
   now="$(date +%s)"
   mtime="$(file_mtime_epoch "$file" || echo "$now")"
   age=$((now - mtime))
@@ -243,6 +329,7 @@ while IFS= read -r -d '' file; do
     continue
   fi
   if exists_in_project "$target_name"; then
+    write_voice_memo_title "$sub" "$target_name" "$label"
     skipped=$((skipped + 1))
     seen_enabled && mark_seen "$name" || true
     continue
@@ -252,7 +339,8 @@ while IFS= read -r -d '' file; do
       if [ "$DRY_RUN" -eq 1 ]; then
         echo "dry-run copy: unsorted/$target_name  (source: $name, label: ${label:-<none>})"
       else
-        cp -p "$file" "$DST_BASE/unsorted/$target_name"
+        copy_recording "$file" "$DST_BASE/unsorted/$target_name"
+        write_source_mapping "$name" "$target_name"
         echo "copied: unsorted/$target_name  (source: $name, label: ${label:-<none>})"
       fi
       copied=$((copied + 1))
@@ -264,6 +352,8 @@ while IFS= read -r -d '' file; do
       echo "dry-run promote: unsorted/$target_name → $sub/$target_name  (source: $name, label: $label)"
     else
       mv "$DST_BASE/unsorted/$target_name" "$DST_BASE/$sub/$target_name"
+      write_source_mapping "$name" "$target_name"
+      write_voice_memo_title "$sub" "$target_name" "$label"
       echo "promoted: unsorted/$target_name → $sub/$target_name  (source: $name, label: $label)"
     fi
     promoted=$((promoted + 1))
@@ -273,7 +363,9 @@ while IFS= read -r -d '' file; do
     if [ "$DRY_RUN" -eq 1 ]; then
       echo "dry-run copy: $sub/$target_name  (source: $name, label: $label)"
     else
-      cp -p "$file" "$DST_BASE/$sub/$target_name"
+      copy_recording "$file" "$DST_BASE/$sub/$target_name"
+      write_source_mapping "$name" "$target_name"
+      write_voice_memo_title "$sub" "$target_name" "$label"
       echo "copied: $sub/$target_name  (source: $name, label: $label)"
     fi
     copied=$((copied + 1))
